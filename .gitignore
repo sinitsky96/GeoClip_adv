@@ -1,0 +1,12 @@
+
+geoclip_adv_attacks/data/mp16_pro/images/
+
+*.csv
+
+*.png
+
+*.pyc
+
+*.pt
+
+geoclip_adv_attacks/results/real_data_evaluation/evaluation_results.txt
