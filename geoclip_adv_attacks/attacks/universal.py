@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
-from geoclip_adv_attacks.attacks.pgd_attacks.attack import Attack
+from geoclip_adv_attacks.attacks.attack import Attack
 
 class UPGD(Attack):
     """

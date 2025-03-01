@@ -3,11 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
-from geoclip_adv_attacks.attacks.pgd_attacks.attack import Attack
+from geoclip_adv_attacks.attacks.attack import Attack
 
 class PGD(Attack):
     """
-    Implementation of the Projected Gradient Descent (PGD) attack for GeoCLIP.
+    Implementation of the Projected Gradient Descent (PGD) attack for GeoCLIP with L0 norm.
     """
     def __init__(self, model, criterion, misc_args, pgd_args):
         """
@@ -27,8 +27,7 @@ class PGD(Attack):
                 - verbose: Whether to print verbose information
                 - report_info: Whether to report information about the attack
             pgd_args: Dictionary containing PGD-specific arguments
-                - norm: Norm to use for the attack (L1, L2, Linf)
-                - eps: Epsilon for the attack
+                - eps: Number of pixels to modify (L0 budget)
                 - n_restarts: Number of restarts
                 - n_iter: Number of iterations
                 - alpha: Step size
@@ -37,15 +36,12 @@ class PGD(Attack):
         super().__init__(model, criterion, misc_args, pgd_args)
         
         # Set PGD-specific arguments
-        self.norm = pgd_args.get('norm', 'Linf')
-        self.eps = pgd_args.get('eps', 0.03)
+        self.norm = 'L0'  # Only L0 norm is supported
+        self.eps = int(pgd_args.get('eps', 10))  # Number of pixels to modify
         self.n_restarts = pgd_args.get('n_restarts', 1)
         self.n_iter = pgd_args.get('n_iter', 40)
-        self.alpha = pgd_args.get('alpha', 0.01)
+        self.alpha = pgd_args.get('alpha', 1.0)
         self.rand_init = pgd_args.get('rand_init', True)
-        
-        # Validate norm
-        assert self.norm in ['L1', 'L2', 'Linf'], f"Norm {self.norm} not supported"
     
     def report_schematics(self):
         """
@@ -69,7 +65,7 @@ class PGD(Attack):
     
     def perturb(self, X, y):
         """
-        Perturb the input X to maximize the loss.
+        Perturb the input X to maximize the loss using L0 norm.
         
         Args:
             X: Input data
@@ -93,20 +89,22 @@ class PGD(Attack):
             
             # Random initialization if specified
             if self.rand_init:
-                if self.norm == 'Linf':
-                    delta.data.uniform_(-self.eps, self.eps)
-                elif self.norm == 'L2':
-                    delta.data.normal_()
-                    delta_norm = torch.norm(delta.data.view(delta.shape[0], -1), dim=1, keepdim=True)
-                    delta.data = delta.data / delta_norm * self.eps
-                elif self.norm == 'L1':
-                    delta.data.uniform_(-1, 1)
-                    delta.data = delta.data / torch.norm(delta.data.view(delta.shape[0], -1), p=1, dim=1, keepdim=True) * self.eps
+                # Randomly select pixels to modify
+                batch_size = X.shape[0]
+                n_features = int(np.prod(X.shape[1:]))  # Total number of features (C*H*W)
+                
+                # For each sample in the batch, randomly select eps pixels
+                for i in range(batch_size):
+                    perm = torch.randperm(n_features)[:self.eps]
+                    delta.data[i].view(-1)[perm] = torch.randn(self.eps, device=self.device)
             
             # Project perturbation to ensure it's within the valid range
             min_val = torch.as_tensor(self.data_RGB_start, device=self.device).clone().detach()
             max_val = torch.as_tensor(self.data_RGB_end, device=self.device).clone().detach()
             delta.data = torch.clamp(X + delta.data, min=min_val, max=max_val) - X
+            
+            # Keep track of which pixels can be modified
+            pixel_mask = (delta.data != 0).float()
             
             # Optimization loop
             for i_iter in range(self.n_iter):
@@ -122,25 +120,34 @@ class PGD(Attack):
                 
                 # Update perturbation
                 with torch.no_grad():
-                    if self.norm == 'Linf':
-                        delta.data = delta.data + self.alpha * delta.grad.sign()
-                        delta.data = torch.clamp(delta.data, -self.eps, self.eps)
-                    elif self.norm == 'L2':
-                        grad_norm = torch.norm(delta.grad.view(delta.shape[0], -1), dim=1, keepdim=True)
-                        delta.data = delta.data + self.alpha * delta.grad / (grad_norm + 1e-8)
-                        delta_norm = torch.norm(delta.data.view(delta.shape[0], -1), dim=1, keepdim=True)
-                        delta.data = delta.data / torch.clamp(delta_norm / self.eps, min=1.0)
-                    elif self.norm == 'L1':
-                        grad_abs = torch.abs(delta.grad.view(delta.shape[0], -1))
-                        grad_max, grad_max_idx = torch.max(grad_abs, dim=1)
-                        delta.data.view(delta.shape[0], -1).scatter_(1, grad_max_idx.unsqueeze(1), 
-                                                                    self.alpha * torch.sign(delta.grad.view(delta.shape[0], -1).gather(1, grad_max_idx.unsqueeze(1))))
-                        delta.data = delta.data / torch.clamp(torch.norm(delta.data.view(delta.shape[0], -1), p=1, dim=1, keepdim=True) / self.eps, min=1.0)
+                    # Get the gradient magnitude for each pixel
+                    grad_abs = torch.abs(delta.grad.view(delta.shape[0], -1))
+                    
+                    # For each sample, update only the top-k pixels by gradient magnitude
+                    # where k is the number of non-zero pixels in the current perturbation
+                    for i in range(X.shape[0]):
+                        n_active = int(pixel_mask[i].sum().item())
+                        if n_active > 0:
+                            # Get indices of current non-zero pixels
+                            active_indices = torch.nonzero(pixel_mask[i].view(-1)).squeeze()
+                            
+                            # Update these pixels
+                            delta.data[i].view(-1)[active_indices] += self.alpha * torch.sign(delta.grad[i].view(-1)[active_indices])
                 
                 # Project perturbation to ensure the perturbed input is within the valid range
                 min_val = torch.as_tensor(self.data_RGB_start, device=self.device).clone().detach()
                 max_val = torch.as_tensor(self.data_RGB_end, device=self.device).clone().detach()
                 delta.data = torch.clamp(X + delta.data, min=min_val, max=max_val) - X
+                
+                # Ensure we maintain the L0 constraint by keeping only the top-k pixels
+                delta_abs = torch.abs(delta.data.view(delta.shape[0], -1))
+                for i in range(X.shape[0]):
+                    if delta_abs[i].sum() > 0:  # If there are any non-zero perturbations
+                        _, top_indices = torch.topk(delta_abs[i], min(self.eps, delta_abs[i].shape[0]))
+                        mask = torch.zeros_like(delta_abs[i])
+                        mask[top_indices] = 1
+                        delta.data[i] = (delta.data[i].view(-1) * mask).view(delta.data[i].shape)
+                        pixel_mask[i] = (mask > 0).float().view(pixel_mask[i].shape)
             
             # Compute final loss for this restart
             with torch.no_grad():

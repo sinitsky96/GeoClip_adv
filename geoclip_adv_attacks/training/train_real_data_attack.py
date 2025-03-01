@@ -12,44 +12,15 @@ import time
 import random
 import geoclip
 from geoclip.model import GeoCLIP
-from geoclip_adv_attacks.attacks.pgd_attacks.pgd import PGD
-from geoclip_adv_attacks.attacks.pgd_attacks.universal import UPGD
+from geoclip_adv_attacks.attacks.pgd import PGD
+from geoclip_adv_attacks.attacks.universal import UPGD
+from geoclip_adv_attacks.attacks.patch_attack import PatchAttack
 from torchvision import transforms
+from CONFIG import CONFIG, get_attack_args, create_required_directories
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
-
-# Configuration parameters
-CONFIG = {
-    # Paths
-    "gps_gallery_path": "geoclip/model/gps_gallery/coordinates_100K.csv",
-    "output_dir": "geoclip_adv_attacks/results/real_data_attack",
-    "cache_dir": "geoclip_adv_attacks/data/real_data_cache",
-    "mp16_dir": "geoclip_adv_attacks/data/mp16_pro",
-    "mp16_metadata": "geoclip_adv_attacks/data/mp16_pro/metadata/mp16_subset.csv",
-    
-    # Data options
-    "num_locations": 100,  # Number of locations to sample from the GPS gallery
-    "batch_size": 8,
-    "use_real_images": True,  # Whether to use real images from MP16-Pro
-    "max_real_images": 1000,  # Maximum number of real images to use
-    
-    # Attack parameters
-    "attack_type": "pgd",  # Options: "pgd" or "universal"
-    "epsilon": 0.03,
-    "alpha": 0.01,
-    "n_iter": 1,
-    "n_restarts": 1,
-    
-    # Output options
-    "vis_freq": 5,  # Frequency of visualization (in batches)
-    "save_freq": 10,  # Frequency of saving perturbations (in batches)
-    
-    # Attack target options
-    "targeted": False,  # Whether to perform a targeted attack
-    "target_location": [0.0, 0.0],  # Target location for targeted attacks [lat, lon]
-}
 
 def get_transforms():
     """
@@ -57,10 +28,10 @@ def get_transforms():
     This should match the preprocessing used by CLIP
     """
     return transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize(CONFIG["model"]["image_size"]),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], 
-                             std=[0.26862954, 0.26130258, 0.27577711])
+                           std=[0.26862954, 0.26130258, 0.27577711])
     ])
 
 def geoclip_criterion(model, images, locations, targeted=False, target_location=None):
@@ -120,7 +91,7 @@ def visualize_attack(model, original_img, perturbed_img, location, save_path=Non
         location_batch = location.unsqueeze(0).to(device)
         
         # Load MP16 locations for predictions
-        mp16_data = pd.read_csv(CONFIG["mp16_metadata"])
+        mp16_data = pd.read_csv(CONFIG["paths"]["mp16_metadata"])
         mp16_locations = torch.tensor(mp16_data[['LAT', 'LON']].values, dtype=torch.float).to(device)
         
         # Get logits for original and perturbed images
@@ -224,15 +195,12 @@ class RealGeoDataset(Dataset):
             'image_name': os.path.basename(img_info['path'])
         }
 
-def train_real_data_attack(config=None):
+def train_real_data_attack():
     """
     Train an adversarial attack on real-world geolocated images
     """
-    if config is None:
-        config = CONFIG
-    
-    # Create output directory
-    os.makedirs(config["output_dir"], exist_ok=True)
+    # Create required directories
+    create_required_directories()
     
     # Load GeoCLIP model
     print("Loading GeoCLIP model...")
@@ -243,62 +211,48 @@ def train_real_data_attack(config=None):
     # Create dataset and dataloader
     transform = get_transforms()
     dataset = RealGeoDataset(
-        config["mp16_metadata"],
+        CONFIG["paths"]["mp16_metadata"],
         transform=transform,
-        cache_dir=config["cache_dir"],
-        mp16_dir=config["mp16_dir"],
-        max_real_images=config["max_real_images"]
+        cache_dir=CONFIG["paths"]["cache_dir"],
+        mp16_dir=CONFIG["paths"]["mp16_dir"],
+        max_real_images=CONFIG["data"]["max_real_images"]
     )
-    dataloader = DataLoader(dataset, batch_size=config["batch_size"], shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=CONFIG["data"]["batch_size"], shuffle=True)
     
     # Load all MP16 locations to use as prediction targets
     print("Loading MP16 locations...")
-    mp16_data = pd.read_csv(config["mp16_metadata"])
+    mp16_data = pd.read_csv(CONFIG["paths"]["mp16_metadata"])
     mp16_locations = torch.tensor(mp16_data[['LAT', 'LON']].values, dtype=torch.float).to(device)
     
-    # Setup attack parameters
-    misc_args = {
-        'device': device,
-        'dtype': torch.float32,
-        'batch_size': config["batch_size"],
-        'data_shape': [3, 224, 224],  # [C, H, W]
-        'data_RGB_start': [-2.0, -2.0, -2.0],  # Min pixel values after CLIP normalization
-        'data_RGB_end': [2.0, 2.0, 2.0],    # Max pixel values after CLIP normalization
-        'data_RGB_size': [4.0, 4.0, 4.0],   # Range of pixel values
-        'verbose': True,
-        'report_info': True
-    }
-    
-    pgd_args = {
-        'norm': 'Linf',
-        'eps': config["epsilon"],
-        'n_restarts': config["n_restarts"],
-        'n_iter': config["n_iter"],
-        'alpha': config["alpha"],
-        'rand_init': True
-    }
+    # Get attack arguments
+    misc_args, attack_args = get_attack_args()
     
     # Initialize attack based on type
-    if config["attack_type"].lower() == 'universal':
-        attack = UPGD(model, None, misc_args, pgd_args)
+    if CONFIG["attack"]["type"].lower() == 'universal':
+        attack = UPGD(model, None, misc_args, attack_args)
         print("Using Universal PGD Attack")
+    elif CONFIG["attack"]["type"].lower() == 'patch':
+        attack = PatchAttack(model, None, misc_args, attack_args)
+        print("Using Patch Attack")
     else:
-        attack = PGD(model, None, misc_args, pgd_args)
+        attack = PGD(model, None, misc_args, attack_args)
         print("Using Standard PGD Attack")
     
     attack.report_schematics()
     
     # For universal attack, we'll accumulate gradients across batches
-    if config["attack_type"].lower() == 'universal':
+    if CONFIG["attack"]["type"].lower() == 'universal':
         # Initialize universal perturbation
-        universal_pert = torch.zeros((1, 3, 224, 224), device=device)
+        universal_pert = torch.zeros((1, *CONFIG["model"]["data_shape"]), device=device)
         universal_pert.requires_grad_()
         
         # Optimizer for universal perturbation
-        optimizer = torch.optim.Adam([universal_pert], lr=config["alpha"])
+        optimizer = torch.optim.Adam([universal_pert], lr=CONFIG["attack"]["alpha"])
     
     # Train attack
     print("Starting attack training...")
+    current_patch_location = None
+    
     for batch_idx, batch in enumerate(tqdm(dataloader)):
         images = batch['image'].to(device)
         locations = batch['location'].to(device)
@@ -308,16 +262,16 @@ def train_real_data_attack(config=None):
             model, 
             images, 
             mp16_locations,  # Use all MP16 locations as potential targets
-            targeted=config["targeted"], 
-            target_location=config["target_location"]
+            targeted=CONFIG["attack"]["targeted"], 
+            target_location=CONFIG["attack"]["target_location"]
         )
         
-        if config["attack_type"].lower() == 'universal':
+        if CONFIG["attack"]["type"].lower() == 'universal':
             # Apply universal perturbation
             perturbed_images = images + universal_pert
             
             # Ensure perturbed images are within valid range
-            perturbed_images = torch.clamp(perturbed_images, -2.0, 2.0)  # CLIP normalization range
+            perturbed_images = torch.clamp(perturbed_images, *CONFIG["model"]["data_RGB_start"], *CONFIG["model"]["data_RGB_end"])
             
             # Compute loss for universal perturbation
             loss = criterion(perturbed_images).mean()
@@ -329,17 +283,29 @@ def train_real_data_attack(config=None):
             
             # Project perturbation to epsilon ball
             with torch.no_grad():
-                universal_pert.data = torch.clamp(universal_pert.data, -config["epsilon"], config["epsilon"])
+                universal_pert.data = torch.clamp(
+                    universal_pert.data, 
+                    -CONFIG["attack"]["epsilon"], 
+                    CONFIG["attack"]["epsilon"]
+                )
             
             # For visualization and metrics
             perturbation = universal_pert.expand_as(images)
-            perturbed_images = torch.clamp(images + perturbation, -2.0, 2.0)
-            
+            perturbed_images = torch.clamp(
+                images + perturbation, 
+                *CONFIG["model"]["data_RGB_start"], 
+                *CONFIG["model"]["data_RGB_end"]
+            )
         else:
-            # Standard PGD attack
+            # Standard PGD or Patch attack
             attack.criterion = criterion
             perturbed_images = attack.perturb(images, locations)
-            perturbation = perturbed_images - images
+            if CONFIG["attack"]["type"].lower() == 'patch':
+                current_patch_location = attack.current_location
+                # Get the actual patch being optimized
+                patch = attack.get_patch()  # We'll need to add this method to PatchAttack
+            else:
+                perturbation = perturbed_images - images
         
         # Calculate distance between original and perturbed predictions
         with torch.no_grad():
@@ -365,45 +331,53 @@ def train_real_data_attack(config=None):
         print(f"Average distance: {distances.mean().item():.4f}")
         print(f"Success rate: {success_rate.item():.4f}")
         
-        # Visualize first image in batch
-        if batch_idx % config["vis_freq"] == 0:
-            vis_path = os.path.join(config["output_dir"], f"attack_vis_batch_{batch_idx}.png")
-            visualize_attack(
-                model,
-                images[0], 
-                perturbed_images[0], 
-                locations[0],
-                save_path=vis_path
-            )
+        # # Visualize first image in batch
+        # if batch_idx % CONFIG["training"]["vis_freq"] == 0:
+        #     vis_path = os.path.join(CONFIG["paths"]["attack_output_dir"], f"attack_vis_batch_{batch_idx}.png")
+        #     visualize_attack(
+        #         model,
+        #         images[0], 
+        #         perturbed_images[0], 
+        #         locations[0],
+        #         save_path=vis_path
+        #     )
         
         # Save perturbations
-        if batch_idx % config["save_freq"] == 0:
-            if config["attack_type"].lower() == 'universal':
-                torch.save(universal_pert, os.path.join(config["output_dir"], f"universal_perturbation.pt"))
+        if batch_idx % CONFIG["training"]["save_freq"] == 0:
+            save_path = os.path.join(CONFIG["paths"]["attack_output_dir"], 
+                                   f"{CONFIG['attack']['type']}_attack_batch_{batch_idx}.pt")
+            if CONFIG["attack"]["type"].lower() == 'universal':
+                torch.save(universal_pert, save_path)
+            elif CONFIG["attack"]["type"].lower() == 'patch':
+                # Save the actual patch being optimized
+                patch_data = {
+                    'patch': patch,  # This is the actual patch from the attack
+                    'location': current_patch_location if isinstance(CONFIG["attack"]["patch"]["location"], tuple) else 'random'
+                }
+                torch.save(patch_data, save_path)
             else:
-                torch.save(perturbation, os.path.join(config["output_dir"], f"perturbation_batch_{batch_idx}.pt"))
+                torch.save(perturbation, save_path)
     
     # Save final perturbation
-    if config["attack_type"].lower() == 'universal':
-        torch.save(universal_pert, os.path.join(config["output_dir"], "final_universal_perturbation.pt"))
-        print(f"Saved final universal perturbation to {os.path.join(config['output_dir'], 'final_universal_perturbation.pt')}")
+    final_path = os.path.join(CONFIG["paths"]["attack_output_dir"], 
+                             f"final_{CONFIG['attack']['type']}_attack.pt")
+    if CONFIG["attack"]["type"].lower() == 'universal':
+        torch.save(universal_pert, final_path)
+    elif CONFIG["attack"]["type"].lower() == 'patch':
+        # Save the actual patch being optimized
+        patch_data = {
+            'patch': patch,  # This is the actual patch from the attack
+            'location': current_patch_location if isinstance(CONFIG["attack"]["patch"]["location"], tuple) else 'random'
+        }
+        torch.save(patch_data, final_path)
     else:
-        torch.save(perturbation, os.path.join(config["output_dir"], "final_perturbation.pt"))
-        print(f"Saved final perturbation to {os.path.join(config['output_dir'], 'final_perturbation.pt')}")
+        torch.save(perturbation, final_path)
     
-    print("Attack training completed!")
+    print(f"Attack training completed! Final perturbation saved to {final_path}")
     
     return {
-        "perturbation_path": os.path.join(config["output_dir"], 
-                                         "final_universal_perturbation.pt" if config["attack_type"].lower() == 'universal' else "final_perturbation.pt")
+        "perturbation_path": final_path
     }
 
 if __name__ == "__main__":
-    # You can modify the CONFIG dictionary here before calling train_real_data_attack
-    # For example:
-    # CONFIG["attack_type"] = "universal"
-    # CONFIG["epsilon"] = 0.05
-    # CONFIG["targeted"] = True
-    # CONFIG["target_location"] = [40.7128, -74.0060]  # New York City
-    
     train_real_data_attack() 
