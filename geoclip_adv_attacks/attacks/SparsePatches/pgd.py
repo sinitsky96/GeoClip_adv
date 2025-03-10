@@ -1,5 +1,5 @@
 import torch
-from geoclip_adv_attacks.SparsePatches.attack import Attack
+from geoclip_adv_attacks.attacks.SparsePatches.attack import Attack
 
 
 class PGD(Attack):
