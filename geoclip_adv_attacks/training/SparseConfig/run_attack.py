@@ -1,7 +1,7 @@
 import torch
 import gc
 from geoclip_adv_attacks.training.SparseConfig.parser import get_args, save_img_tensors
-from AdvRunner import AdvRunner
+from geoclip_adv_attacks.training.SparseConfig.AdvRunner import AdvRunner
 
 
 def run_adv_attacks(args):

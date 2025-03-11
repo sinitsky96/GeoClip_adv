@@ -2,7 +2,7 @@ import numpy as np
 import math
 import itertools
 import torch
-from .PGDTrim import PGDTrim
+from geoclip_adv_attacks.attacks.SparsePatches.PGDTrim import PGDTrim
 
 
 class PGDTrimKernel(PGDTrim):

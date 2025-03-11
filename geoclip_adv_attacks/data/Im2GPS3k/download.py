@@ -5,17 +5,33 @@ from PIL import Image
 
 import torch
 from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
 
-def download_data(args):
+
+
+def get_transforms():
+    """
+    Get image transforms for GeoCLIP
+    This should match the preprocessing used by CLIP
+    """
+    return transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.PILToTensor(),
+        transforms.ConvertImageDtype(torch.float),
+        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        ])
+
+def download_data(data_dir):
     """
     Ensure that the dataset (images + CSV files) is present.
     Run the shell scripts to download them if they are missing.
     """
-    images_path = os.path.join(args.data_dir, 'Im2GPS3k', 'images')
-    csv_path_1 = os.path.join(args.data_dir, 'Im2GPS3k', 'im2gps3k_places365.csv')
-    csv_path_2 = os.path.join(args.data_dir, 'Im2GPS3k', 'im2gps_places365.csv')
-    download_images_path = os.path.join(args.data_dir, 'Im2GPS3k', 'download_images.sh')
-    download_csv_path = os.path.join(args.data_dir, 'Im2GPS3k', 'download_csv.sh')
+    images_path = os.path.join(data_dir, 'Im2GPS3k', 'images')
+    csv_path_1 = os.path.join(data_dir, 'Im2GPS3k', 'im2gps3k_places365.csv')
+    csv_path_2 = os.path.join(data_dir, 'Im2GPS3k', 'im2gps_places365.csv')
+    download_images_path = os.path.join(data_dir, 'Im2GPS3k', 'download_images.sh')
+    download_csv_path = os.path.join(data_dir, 'Im2GPS3k', 'download_csv.sh')
 
     # 1. Download images if they don't exist
     if not os.path.exists(images_path):
@@ -65,11 +81,13 @@ class Im2GPSDataset(Dataset):
         return image, (lat, lon)
 
 
-def get_im2gps_dataloader(args, 
-                          transform=None, 
-                          shuffle=True, 
-                          num_workers=4,
-                          csv_version='im2gps3k_places365.csv'):
+def get_im2gps_dataloader(
+        data_dir,
+        batch_size,
+        transform=None, 
+        shuffle=True, 
+        num_workers=4,
+        csv_version='im2gps3k_places365.csv'):
     """
     Main function to:
       - Ensure data is downloaded (images + CSV).
@@ -77,21 +95,20 @@ def get_im2gps_dataloader(args,
       - Return a DataLoader.
     
     Args:
-      args: Object holding necessary paths in `args.data_dir`.
-      transform: Any torchvision transforms to be applied to images.
-      batch_size: Batch size for the DataLoader.
-      shuffle: Whether to shuffle the data.
-      num_workers: Number of worker processes for loading.
-      csv_version: Which CSV file to read from. You can choose
-                   'im2gps3k_places365.csv' or 'im2gps_places365.csv'.
+    data_dir: Directory where the data is stored.
+    batch_size: Batch size for the DataLoader.
+    transform: Any torchvision transforms to be applied to images.
+    shuffle: Whether to shuffle the data.
+    num_workers: Number of worker processes for loading.
+    csv_version: Which CSV file to read from. You can choose
+                'im2gps3k_places365.csv' or 'im2gps_places365.csv'.
     """
     # 1. Make sure the data is available
-    download_data(args)
-    batch_size = args.batch_size
+    download_data(data_dir)
     
     # 2. Paths
-    images_path = os.path.join(args.data_dir, 'Im2GPS3k', 'images')
-    csv_path = os.path.join(args.data_dir, 'Im2GPS3k', csv_version)
+    images_path = os.path.join(data_dir, 'Im2GPS3k', 'images')
+    csv_path = os.path.join(data_dir, 'Im2GPS3k', csv_version)
     
     # 3. Create the dataset
     dataset = Im2GPSDataset(
@@ -111,7 +128,9 @@ def get_im2gps_dataloader(args,
     return dataloader
 
 
-def load_im2gps_data(args, transform=None, csv_version='im2gps3k_places365.csv'):
+def load_im2gps_data(data_dir,
+                     transform=None,
+                     csv_version='im2gps3k_places365.csv'):
     """
     Make sure data is available, then load images and their lat/lon from CSV into memory.
     
@@ -120,11 +139,11 @@ def load_im2gps_data(args, transform=None, csv_version='im2gps3k_places365.csv')
       y: list of (lat, lon) tuples.
     """
     # 1. Ensure the data is downloaded
-    download_data(args)
+    download_data(data_dir)
     
     # 2. Set paths
-    images_dir = os.path.join(args.data_dir, 'Im2GPS3k', 'images')
-    csv_path = os.path.join(args.data_dir, 'Im2GPS3k', csv_version)
+    images_dir = os.path.join(data_dir, 'Im2GPS3k', 'images')
+    csv_path = os.path.join(data_dir, 'Im2GPS3k', csv_version)
     
     # 3. Read the CSV
     df = pd.read_csv(csv_path)

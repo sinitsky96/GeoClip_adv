@@ -42,6 +42,7 @@ CONFIG = {
     
     # Model settings
     "model": {
+        "name": 'GeoClip', # Model name, options: "GeoClip", "Clip"
         "image_size": [224, 224],  # [H, W]
         "data_shape": [3, 224, 224],  # [C, H, W]
         "data_RGB_start": [-2.0, -2.0, -2.0],  # Min pixel values after CLIP normalization
@@ -94,6 +95,20 @@ CONFIG = {
             "att_kernel_min_active": False, #Consider only fully activated kernel patches when sampling masks
             "att_kernel_group": False, # Group pixels in the mask according to kernel, defult: False, Trim the perturbation according to kernel structure
             
+        },
+
+        # may god save the soul of whoever tried to understand the code of sparse rs and why things were done
+        # the way they were done
+
+        # Sparse RS attack specific parameters
+        "sparse_rs": {
+            "norm": "L0",  # type of attack = 'L0', 'patches', 'frames', 'patches_universal', 'frames_universal'
+            "k": 150., # number of frames probably, eps = k + 0 later on
+            "n_restarts": 1,  # Number of random restarts
+            "loss": 'margin', # loss function for the attack, options: 'margin', 'ce'
+            "constant_schedule": False,  # "use constant alphai" (idk, looks like it cuts p_init (alpha) in half one extra time in rs_attacks.py)
+            "use_feature_space": False,
+            "resample_period_univ": 1, #period in queries of resampling images and locations for universal attacks
         },
     },
     
