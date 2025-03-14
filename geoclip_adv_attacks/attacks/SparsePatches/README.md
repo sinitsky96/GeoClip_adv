@@ -1,2 +1,0 @@
-# Sparse patches adversarial attacks via extrapolating point-wise information
-cloned from yanemcovsky's repository "SparsePatches" (https://github.com/yanemcovsky/SparsePatches) and altered to fit the purpose of attacking GeoClip.
