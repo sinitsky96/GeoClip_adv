@@ -11,6 +11,7 @@ from torchvision import models as torch_models
 from geoclip.model.GeoCLIP import GeoCLIP
 from transformers import CLIPProcessor, CLIPModel
 from data.Im2GPS3k.download import get_transforms, get_im2gps_dataloader
+from sparse_rs.rs_attacks_geoclip import RSAttackGeoCLIP
 
 import sys
 import time
@@ -83,15 +84,13 @@ if __name__ == '__main__':
     parser.add_argument('--model', default='geoclip', type=str)
     parser.add_argument('--dataset', type=str, default='Im2GPS3k') # Im2GPS3k, YFCC26k
     parser.add_argument('--save_dir', type=str, default='./results')
-    parser.add_argument('--data_path', type=str)
+    parser.add_argument('--data_path', type=str, default="./data")
 
     parser.add_argument('--device', type=str, default='cuda')
 
     
     args = parser.parse_args()
 
-    if args.data_path is None:
-        args.data_path = "/scratch/datasets/imagenet/val"
     
     args.eps = args.k + 0
     args.bs = args.n_ex + 0
@@ -103,6 +102,8 @@ if __name__ == '__main__':
     torch.cuda.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
+    # if args.data_path is None:
+    #     args.data_path = "/scratch/datasets/imagenet/val"
     # if args.dataset == 'ImageNet':
     #     # load pretrained model
     #     model = PretrainedModel(args.model)
@@ -125,13 +126,8 @@ if __name__ == '__main__':
     #     x_test, y_test = next(testiter)
 
     if args.dataset == 'Im2GPS3k':
-        if args.use_feature_space:
-            test_loader = get_im2gps_dataloader(args.data_path,
-                                                batch_size=args.bs,
-                                                transform=get_transforms)
-        else:
-            test_loader = get_im2gps_dataloader(args.data_path,
-                                                batch_size=args.bs)
+        test_loader = get_im2gps_dataloader(args.data_path,
+                                            batch_size=args.bs)
         testiter = iter(test_loader)
         x_test, y_test = next(testiter)
 
@@ -178,11 +174,24 @@ if __name__ == '__main__':
     if args.use_feature_space:
         param_run += '_featurespace'
     
-    from rs_attacks import RSAttack
-    adversary = RSAttack(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
-        p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
-        loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
-        data_loader=data_loader, resample_loc=args.resample_loc)
+    # from rs_attacks import RSAttack
+    # adversary = RSAttack(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
+    #     p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
+    #     loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
+    #     data_loader=data_loader, resample_loc=args.resample_loc)
+
+    if args.model.lower() == "geoclip":
+        from rs_attacks_geoclip import RSAttackGeoCLIP
+        adversary = RSAttackGeoCLIP(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
+            p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
+            loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
+            data_loader=data_loader, resample_loc=args.resample_loc)
+    else:
+        from rs_attacks import RSAttack
+        adversary = RSAttack(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
+            p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
+            loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
+            data_loader=data_loader, resample_loc=args.resample_loc)
     
     # set target classes
     if args.targeted and 'universal' in args.norm:
