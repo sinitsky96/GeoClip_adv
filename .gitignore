@@ -11,3 +11,7 @@ geoclip_adv_attacks/data/Im2GPS3k/images/
 *.pt
 
 geoclip_adv_attacks/results/real_data_evaluation/evaluation_results.txt
+
+geoclip_adv_attacks/data/Im2GPS/images/
+
+geoclip_adv_attacks/data/Im2GPS/im2gps.zip

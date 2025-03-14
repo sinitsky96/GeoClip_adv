@@ -126,10 +126,7 @@ def run_adv_attacks(args):
             save_img_tensors(save_path, l0_norms_adv_x[l0_norm_idx], args.y_test,
                              l0_norms_adv_y[l0_norm_idx], args.labels_str_dict)
 
-
-
-
-    # imgs_save_path
+    # Clean up memory
     del init_accuracy
     del adv_runner
     del x_adv
@@ -148,9 +145,81 @@ def run_adv_attacks(args):
     del tot_adv_compute_time_std
     del l0_norms_adv_succ_ratio
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available() and args.device.type == 'cuda':
+        torch.cuda.empty_cache()
 
 
 if __name__ == '__main__':
     args = get_args()
+    
+    # Always use PGDTrim regardless of specified attack
+    from attacks.pgd_attacks import PGDTrim
+    args.attack_name = 'PGDTrim'
+    
+    # Determine whether to use kernel version based on the kernel size
+    if args.att_kernel_size > 1:
+        from attacks.pgd_attacks import PGDTrimKernel
+        args.attack_obj = PGDTrimKernel(
+            eps_l_inf=args.eps_l_inf,
+            n_iter=args.n_iter,
+            sparsity=args.sparsity,
+            n_restarts=args.n_restarts,
+            alpha=args.alpha,
+            init_zeros=args.att_init_zeros,
+            dropout_dist=args.att_dpo_dist,
+            dropout_mean=args.att_dpo_mean,
+            dropout_std=args.att_dpo_std,
+            trim_steps=args.att_trim_steps,
+            max_trim_steps=args.att_max_trim_steps,
+            trim_steps_reduce=args.att_trim_steps_reduce,
+            const_dpo_mean=args.att_const_dpo_mean,
+            const_dpo_std=args.att_const_dpo_std,
+            post_trim_dropout=args.att_post_trim_dpo,
+            dynamic_trim=args.att_dynamic_trim,
+            mask_distribution=args.att_mask_dist,
+            mask_prob_amp_rate=args.att_mask_prob_amp_rate,
+            norm_mask_amp=args.att_norm_mask_amp,
+            mask_opt_iter=args.att_mask_opt_iter,
+            n_mask_samples=args.att_n_mask_samples,
+            no_samples_limit=args.att_no_samples_limit,
+            trim_best_mask=args.att_trim_best_mask,
+            kernel_size=args.att_kernel_size,
+            kernel_group=args.att_kernel_group,
+            kernel_min_active=args.att_kernel_min_active,
+            batch_size=args.batch_size,
+            report_info=args.report_info,
+            device=args.device,
+            verbose=args.attack_verbose
+        )
+    else:
+        args.attack_obj = PGDTrim(
+            eps_l_inf=args.eps_l_inf,
+            n_iter=args.n_iter,
+            sparsity=args.sparsity,
+            n_restarts=args.n_restarts,
+            alpha=args.alpha,
+            init_zeros=args.att_init_zeros,
+            dropout_dist=args.att_dpo_dist,
+            dropout_mean=args.att_dpo_mean,
+            dropout_std=args.att_dpo_std,
+            trim_steps=args.att_trim_steps,
+            max_trim_steps=args.att_max_trim_steps,
+            trim_steps_reduce=args.att_trim_steps_reduce,
+            const_dpo_mean=args.att_const_dpo_mean,
+            const_dpo_std=args.att_const_dpo_std,
+            post_trim_dropout=args.att_post_trim_dpo,
+            dynamic_trim=args.att_dynamic_trim,
+            mask_distribution=args.att_mask_dist,
+            mask_prob_amp_rate=args.att_mask_prob_amp_rate,
+            norm_mask_amp=args.att_norm_mask_amp,
+            mask_opt_iter=args.att_mask_opt_iter,
+            n_mask_samples=args.att_n_mask_samples,
+            no_samples_limit=args.att_no_samples_limit,
+            trim_best_mask=args.att_trim_best_mask,
+            batch_size=args.batch_size,
+            report_info=args.report_info,
+            device=args.device,
+            verbose=args.attack_verbose
+        )
+    
     run_adv_attacks(args)

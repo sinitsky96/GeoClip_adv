@@ -94,9 +94,58 @@ class AdvRunner:
         else:
             all_succ = None
             all_loss = None
-        with torch.cuda.device(self.device):
-            start_events = [torch.cuda.Event(enable_timing=True) for batch_idx in range(n_batches)]
-            end_events = [torch.cuda.Event(enable_timing=True) for batch_idx in range(n_batches)]
+        
+        batch_time_measurements = []
+        # Use CUDA timing events if available, otherwise use time module
+        if self.device.type == 'cuda':
+            with torch.cuda.device(self.device):
+                start_events = [torch.cuda.Event(enable_timing=True) for batch_idx in range(n_batches)]
+                end_events = [torch.cuda.Event(enable_timing=True) for batch_idx in range(n_batches)]
+                for batch_idx in trange(n_batches):
+                    start_idx = batch_idx * bs
+                    end_idx = min((batch_idx + 1) * bs, n_examples)
+                    batch_indices = torch.arange(start_idx, end_idx, device=orig_device)
+                    x = x_orig[start_idx:end_idx, :].clone().detach().to(self.device)
+                    y = y_orig[start_idx:end_idx].clone().detach().to(self.device)
+                    
+                    # make sure that x is a 4d tensor even if there is only a single datapoint left
+                    if len(x.shape) == 3:
+                        x.unsqueeze_(dim=0)
+                    start_events[batch_idx].record()
+                    batch_l0_norms_adv_perts, all_batch_succ, all_batch_loss = self.attack.perturb(x, y)
+                    end_events[batch_idx].record()
+                    torch.cuda.empty_cache()
+                    with torch.no_grad():
+                        batch_x_adv = x + batch_l0_norms_adv_perts[-1]
+                        x_adv[start_idx:end_idx] = batch_x_adv.detach().to(orig_device)
+                        output = self.model.forward(batch_x_adv)
+                        y_adv[start_idx:end_idx] = output.max(dim=1)[1].detach().to(orig_device)
+                        l0_norms_adv_perts[:, start_idx:end_idx] = batch_l0_norms_adv_perts.detach().to(orig_device)
+                        batch_l0_norms = batch_l0_norms_adv_perts.abs().view(
+                            self.n_l0_norms, bs, self.data_channels, -1).sum(dim=2).count_nonzero(2).unsqueeze(0)
+
+                        perts_l0_norms[:, start_idx:end_idx] = batch_l0_norms.to(orig_device)
+                        if self.attack_report_info:
+                            all_succ[:, :, :, start_idx:end_idx] = all_batch_succ.to(orig_device)
+                            all_loss[:, :, :, start_idx:end_idx] = all_batch_loss.to(orig_device)
+
+                        for l0_norm_idx in range(self.n_l0_norms):
+                            l0_norm_batch_adv_x = x + batch_l0_norms_adv_perts[l0_norm_idx]
+                            output = self.model.forward(l0_norm_batch_adv_x)
+                            l0_norm_batch_adv_y = output.max(dim=1)[1]
+                            false_batch = ~y.eq(l0_norm_batch_adv_y).detach().to(orig_device)
+                            non_robust_indices = batch_indices[false_batch]
+                            l0_norms_robust_flags[l0_norm_idx, non_robust_indices] = False
+                            l0_norms_adv_y[l0_norm_idx, start_idx:end_idx] = l0_norm_batch_adv_y.detach().to(orig_device)
+            torch.cuda.synchronize()
+            adv_batch_compute_times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
+            adv_batch_compute_time_mean = np.mean(adv_batch_compute_times)
+            adv_batch_compute_time_std = np.std(adv_batch_compute_times)
+            tot_adv_compute_time = np.sum(adv_batch_compute_times)
+            tot_adv_compute_time_std = np.std([time * n_batches for time in adv_batch_compute_times])
+        else:
+            # CPU version using regular Python timing
+            import time
             for batch_idx in trange(n_batches):
                 start_idx = batch_idx * bs
                 end_idx = min((batch_idx + 1) * bs, n_examples)
@@ -107,12 +156,11 @@ class AdvRunner:
                 # make sure that x is a 4d tensor even if there is only a single datapoint left
                 if len(x.shape) == 3:
                     x.unsqueeze_(dim=0)
-                start_events[batch_idx].record()
+                start_time = time.time()
                 batch_l0_norms_adv_perts, all_batch_succ, all_batch_loss = self.attack.perturb(x, y)
-                end_events[batch_idx].record()
-                torch.cuda.empty_cache()
+                end_time = time.time()
+                batch_time_measurements.append(end_time - start_time)
                 with torch.no_grad():
-
                     batch_x_adv = x + batch_l0_norms_adv_perts[-1]
                     x_adv[start_idx:end_idx] = batch_x_adv.detach().to(orig_device)
                     output = self.model.forward(batch_x_adv)
@@ -134,12 +182,10 @@ class AdvRunner:
                         non_robust_indices = batch_indices[false_batch]
                         l0_norms_robust_flags[l0_norm_idx, non_robust_indices] = False
                         l0_norms_adv_y[l0_norm_idx, start_idx:end_idx] = l0_norm_batch_adv_y.detach().to(orig_device)
-            torch.cuda.synchronize()
-            adv_batch_compute_times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
-            adv_batch_compute_time_mean = np.mean(adv_batch_compute_times)
-            adv_batch_compute_time_std = np.std(adv_batch_compute_times)
-            tot_adv_compute_time = np.sum(adv_batch_compute_times)
-            tot_adv_compute_time_std = np.std([time * n_batches for time in adv_batch_compute_times])
+            adv_batch_compute_time_mean = np.mean(batch_time_measurements)
+            adv_batch_compute_time_std = np.std(batch_time_measurements)
+            tot_adv_compute_time = np.sum(batch_time_measurements)
+            tot_adv_compute_time_std = np.std(batch_time_measurements)
 
         with torch.no_grad():
             l0_norms_robust_accuracy, l0_norms_perts_info, \
@@ -192,7 +238,8 @@ class AdvRunner:
             del l0_norms_hist_l0_ratio
             del l0_norms_hist_l0_robust_accuracy
             del l0_norms_adv_perts
-            torch.cuda.empty_cache()
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
 
             return init_accuracy, x_adv, y_adv, l0_norms_adv_x, l0_norms_adv_y, \
                 l0_norms_robust_accuracy, l0_norms_acc_steps, l0_norms_avg_loss_steps, l0_norms_perts_info, \

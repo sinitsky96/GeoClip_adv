@@ -11,12 +11,6 @@ from models.cifar10.resnet import ResNet18
 from models.imagenet.inception_v3 import inception_v3
 
 from attacks.pgd_attacks import PGDTrim, PGDTrimKernel
-from attacks.SIA.cornersearch_attacks import CSattack
-from attacks.SIA.pgd_sl0_attacks import PGDL0attack as PGDL0
-from attacks.SF.attack import SF
-from attacks.gf_attacks.GFattack import GFattack
-from attacks.TSAA.attack import TSAA
-from attacks.SAHomotopy.attack import Homotopy
 
 
 def parse_args():
@@ -42,14 +36,12 @@ def parse_args():
     parser.add_argument('--l0_hist_limits', type=int, nargs='+',
                         default=[0, 1, 2, 4, 8, 16, 32, 64, 128, 224, 256, 299, 512, 1024],
                         help='Limits of L0 values for processing the L0 histogram of the resulting perturbations')
-    # [1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1]
     # model args
     parser.add_argument('--model_name', type=str, default='', help='model name to load from robustness (default: use pretrained ResNet18 model)')
     parser.add_argument('--model_transform_input', action='store_true', help='apply model specific data transformation')
 
-    # attack args
-    # pgd attacks args
-    parser.add_argument('--attack', type=str, default='PGDTrim', help='PGDTrim, CS, PGD_L0, SF, GF, TSAA, Homotopy')
+    # attack args - simplified to only include PGDTrim
+    parser.add_argument('--attack', type=str, default='PGDTrim', help='Only PGDTrim is supported')
     parser.add_argument('--eps_l_inf_from_255', type=int, default=255)
     parser.add_argument('--sparsity', type=int, default=1, help='number of pixels in sparse pgd_attacks')
     parser.add_argument('--n_iter', type=int, default=100)
@@ -84,31 +76,16 @@ def parse_args():
 
     # PGDTrim kernel args
     parser.add_argument('--att_kernel_size', type=int, default=1, help='square kernel size for structured perturbation trimming (default: 1X1)')
-    # parser.add_argument('--att_kernel_dpo', action='store_true', help='Group pixels dpo according to the kernel, defult: False')
     parser.add_argument('--att_kernel_min_active', action='store_true', help='Consider only fully activated kernel patches when sampling masks, defult: False')
     parser.add_argument('--att_kernel_group', action='store_true', help='Group pixels in the mask according to kernel, defult: False, Trim the perturbation according to kernel structure')
 
-    # CS attacks args
-    parser.add_argument('--n_max', type=int, default=100, help='the modifications for k-pixels perturbations are sampled among the best n_max (default: 100)')
-    parser.add_argument('--size_incr', type=int, default=1, help='size of progressive increment of sparsity levels to check (default: 1)')
-    # pgd_l0 attacks args
-    parser.add_argument('--step_size', type=float, default=120000.0 / 255.0 / 2, help='step size for gradient descent')
-    parser.add_argument('--n_reduce_iter', type=int, default=3000, help='number of reduce iterations for GF attacks')
-    # SparseFool attacks args
-    parser.add_argument('--lambda_factor', type=float, default=3.)
-    # GreedyFool attacks args
-    parser.add_argument('--gen_distort', action='store_true', help='Generate map via pretrained GAN model (default: use identity as the distortion map)')
-    # Homotopy attacks args
-    parser.add_argument('--dec_factor', type=float, default=0.98)
-    parser.add_argument('--val_c', type=float, default=3)
-    parser.add_argument('--val_w1', type=float, default=1e-2)
-    parser.add_argument('--val_w2', type=float, default=1e-4)
-    parser.add_argument('--val_gamma', default=0.8, type=float)
-    parser.add_argument('--max_update', default=200, type=int)
-    
+    # Removed all other attack-specific arguments
+
     args = parser.parse_args()
-    print("args")
-    print(args)
+    
+    # Override attack to only use PGDTrim even if another attack is specified
+    args.attack = 'PGDTrim'
+    
     return args
 
 
@@ -119,11 +96,11 @@ def compute_run_args(args):
         cudnn.benchmark = True
         args.device = torch.device('cuda:' + str(args.gpus[0]))
         torch.cuda.manual_seed(args.seed)
+        torch.cuda.set_device(args.device)
+        torch.cuda.init()
     else:
         args.gpus = []
         args.device = torch.device('cpu')
-    torch.cuda.set_device(args.device)
-    torch.cuda.init()
     print('Running inference on device \"{}\"'.format(args.device))
     return args
 

@@ -116,3 +116,61 @@ class GeoCLIP(nn.Module):
         top_pred_prob = top_pred.values[0]
 
         return top_pred_gps, top_pred_prob
+    
+    @torch.no_grad()
+    def predict_from_tensor(self, image_tensor, top_k, apply_transforms=False):
+        """Given an image tensor, predict the top k GPS coordinates
+        
+        Args:
+            image_tensor (torch.Tensor): Image tensor of shape (3, H, W) or (B, 3, H, W)
+            top_k (int): Number of top predictions to return
+            apply_transforms (bool): Whether to apply required transformations (resize, crop, normalize)
+                                   Set to True for raw tensors, False for already preprocessed tensors
+            
+        Returns:
+            top_pred_gps (torch.Tensor): Top k GPS coordinates of shape (k, 2)
+            top_pred_prob (torch.Tensor): Top k GPS probabilities of shape (k,)
+        """
+        with torch.no_grad():
+            # Ensure proper dimensions (add batch dimension if needed)
+            if len(image_tensor.shape) == 3:
+                image_tensor = image_tensor.unsqueeze(0)
+                
+            # Move to the correct device
+            image_tensor = image_tensor.to(self.device)
+            
+            # Apply transformations if needed
+            if apply_transforms:
+                from torchvision import transforms
+                
+                # Create transformation pipeline matching what CLIP expects
+                transform = transforms.Compose([
+                    transforms.Resize(256),
+                    transforms.CenterCrop(224),
+                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+                ])
+                
+                # For PIL-like transformations, convert to PIL and back
+                b, c, h, w = image_tensor.shape
+                transformed_tensors = []
+                
+                for i in range(b):
+                    img = image_tensor[i]
+                    # Apply transforms that work directly on tensors
+                    # (Resize and CenterCrop actually work on tensors in newer PyTorch versions)
+                    transformed = transform(img)
+                    transformed_tensors.append(transformed)
+                    
+                image_tensor = torch.stack(transformed_tensors)
+            
+            gps_gallery = self.gps_gallery.to(self.device)
+            
+            logits_per_image = self.forward(image_tensor, gps_gallery)
+            probs_per_image = logits_per_image.softmax(dim=-1).cpu()
+            
+            # Get top k predictions
+            top_pred = torch.topk(probs_per_image, top_k, dim=1)
+            top_pred_gps = self.gps_gallery[top_pred.indices[0]]
+            top_pred_prob = top_pred.values[0]
+            
+            return top_pred_gps, top_pred_prob
