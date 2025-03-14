@@ -1,3 +1,0 @@
-"""
-GeoClip Adversarial Attacks package.
-""" 

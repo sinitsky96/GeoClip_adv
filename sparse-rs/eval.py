@@ -8,6 +8,10 @@ import torch.utils.data as data
 import torchvision.transforms as transforms
 from torchvision import models as torch_models
 
+from geoclip.model.GeoCLIP import GeoCLIP
+from transformers import CLIPProcessor, CLIPModel
+from data.Im2GPS3k.download import get_transforms, get_im2gps_dataloader
+
 import sys
 import time
 from datetime import datetime
@@ -52,27 +56,37 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--dataset', type=str, default='ImageNet')
-    parser.add_argument('--data_path', type=str)
-    parser.add_argument('--norm', type=str, default='L0')
+    parser.add_argument('--norm', type=str, default='L0') # type of the attack : 'L0', 'patches', 'frames', 'patches_universal', 'frames_universal'
+    
+    # pixel attack k = number of pixels, 
+    # feature space attack k = number of features, 
+    # image-specific frames of width (patch) k, k = frame width
     parser.add_argument('--k', default=150., type=float)
-    parser.add_argument('--n_restarts', type=int, default=1)
-    parser.add_argument('--loss', type=str, default='margin')
-    parser.add_argument('--model', default='pt_vgg', type=str)
-    parser.add_argument('--n_ex', type=int, default=1000)
-    parser.add_argument('--attack', type=str, default='rs_attack')
-    parser.add_argument('--n_queries', type=int, default=1000)
-    parser.add_argument('--targeted', action='store_true')
-    parser.add_argument('--target_class', type=int)
-    parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--constant_schedule', action='store_true')
-    parser.add_argument('--save_dir', type=str, default='./results')
-    parser.add_argument('--use_feature_space', action='store_true')
+
+    parser.add_argument('--n_restarts', type=int, default=1) # Number of random restarts
+    parser.add_argument('--loss', type=str, default='margin') # loss function for the attack, options: 'margin', 'ce'
+    parser.add_argument('--n_ex', type=int, default=1000) # batch size
+    parser.add_argument('--n_queries', type=int, default=1000) # max number of queries, how many times we can prob the model.
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--constant_schedule', action='store_true') 
+    parser.add_argument('--use_feature_space', action='store_true') # whether we attack the feature space or the picture
     
     # Sparse-RS parameter
     parser.add_argument('--alpha_init', type=float, default=.3)
     parser.add_argument('--resample_period_univ', type=int)
     parser.add_argument('--loc_update_period', type=int)
+
+    
+    parser.add_argument('--targeted', action='store_true')
+    parser.add_argument('--target_class', type=int)
+
+    parser.add_argument('--model', default='geoclip', type=str)
+    parser.add_argument('--dataset', type=str, default='Im2GPS3k') # Im2GPS3k, YFCC26k
+    parser.add_argument('--save_dir', type=str, default='./results')
+    parser.add_argument('--data_path', type=str)
+
+    parser.add_argument('--device', type=str, default='cuda')
+
     
     args = parser.parse_args()
 
@@ -85,182 +99,209 @@ if __name__ == '__main__':
     args.resample_loc = args.resample_period_univ
     args.update_loc_period = args.loc_update_period
     
-    if args.dataset == 'ImageNet':
-        # load pretrained model
-        model = PretrainedModel(args.model)
-        assert not model.model.training
-        print(model.model.training)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+
+    # if args.dataset == 'ImageNet':
+    #     # load pretrained model
+    #     model = PretrainedModel(args.model)
+    #     assert not model.model.training
+    #     print(model.model.training)
         
-        # load data
-        IMAGENET_SL = 224
-        IMAGENET_PATH = args.data_path
-        imagenet = datasets.ImageFolder(IMAGENET_PATH,
-                               transforms.Compose([
-                                   transforms.Resize(IMAGENET_SL),
-                                   transforms.CenterCrop(IMAGENET_SL),
-                                   transforms.ToTensor()
-                               ]))
-        torch.manual_seed(0)
+    #     # load data
+    #     IMAGENET_SL = 224
+    #     IMAGENET_PATH = args.data_path
+    #     imagenet = datasets.ImageFolder(IMAGENET_PATH,
+    #                            transforms.Compose([
+    #                                transforms.Resize(IMAGENET_SL),
+    #                                transforms.CenterCrop(IMAGENET_SL),
+    #                                transforms.ToTensor()
+    #                            ]))
     
-        test_loader = data.DataLoader(imagenet, batch_size=args.bs, shuffle=True, num_workers=0)
+    #     test_loader = data.DataLoader(imagenet, batch_size=args.bs, shuffle=True, num_workers=0)
         
+    #     testiter = iter(test_loader)
+    #     x_test, y_test = next(testiter)
+
+    if args.dataset == 'Im2GPS3k':
+        if args.use_feature_space:
+            test_loader = get_im2gps_dataloader(args.data_path,
+                                                batch_size=args.bs,
+                                                transform=get_transforms)
+        else:
+            test_loader = get_im2gps_dataloader(args.data_path,
+                                                batch_size=args.bs)
         testiter = iter(test_loader)
         x_test, y_test = next(testiter)
-        
-    if args.attack in ['rs_attack']:
-        # run Sparse-RS attacks
-        logsdir = '{}/logs_{}_{}'.format(args.save_dir, args.attack, args.norm)
-        savedir = '{}/{}_{}'.format(args.save_dir, args.attack, args.norm)
-        if not os.path.exists(savedir):
-            os.makedirs(savedir)
-        if not os.path.exists(logsdir):
-            os.makedirs(logsdir)
-        
-        if args.targeted or 'universal' in args.norm:
-            args.loss = 'ce'
-        data_loader = testiter if 'universal' in args.norm else None
-        if args.use_feature_space:
-            # reshape images to single color channel to perturb them individually
-            assert args.norm == 'L0'
-            bs, c, h, w = x_test.shape
-            x_test = x_test.view(bs, 1, h, w * c)
-            model = SingleChannelModel(model)
-            str_space = 'feature space'
-        else:
-            str_space = 'pixel space'
-        
-        param_run = '{}_{}_{}_1_{}_nqueries_{:.0f}_pinit_{:.2f}_loss_{}_eps_{:.0f}_targeted_{}_targetclass_{}_seed_{:.0f}'.format(
-            args.attack, args.norm, args.model, args.n_ex, args.n_queries, args.p_init,
-            args.loss, args.eps, args.targeted, args.target_class, args.seed)
-        if args.constant_schedule:
-            param_run += '_constantpinit'
-        if args.use_feature_space:
-            param_run += '_featurespace'
-        
-        from rs_attacks import RSAttack
-        adversary = RSAttack(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
-            p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
-            loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
-            data_loader=data_loader, resample_loc=args.resample_loc)
-        
-        # set target classes
-        if args.targeted and 'universal' in args.norm:
-            if args.target_class is None:
-                y_test = torch.ones_like(y_test) * torch.randint(1000, size=[1]).to(y_test.device)
-            else:
-                y_test = torch.ones_like(y_test) * args.target_class
-            print('target labels', y_test)
-        
-        elif args.targeted:
-            y_test = random_target_classes(y_test, 1000)
-            print('target labels', y_test)
-        
-        bs = min(args.bs, 500)
-        assert args.n_ex % args.bs == 0
-        adv_complete = x_test.clone()
-        qr_complete = torch.zeros([x_test.shape[0]]).cpu()
-        pred = torch.zeros([0]).float().cpu()
-        with torch.no_grad():
-            # find points originally correctly classified
-            for counter in range(x_test.shape[0] // bs):
-                x_curr = x_test[counter * bs:(counter + 1) * bs].cuda()
-                y_curr = y_test[counter * bs:(counter + 1) * bs].cuda()
-                output = model(x_curr)
-                if not args.targeted:
-                    pred = torch.cat((pred, (output.max(1)[1] == y_curr).float().cpu()), dim=0)
-                else:
-                    pred = torch.cat((pred, (output.max(1)[1] != y_curr).float().cpu()), dim=0)
-            
-            adversary.logger.log('clean accuracy {:.2%}'.format(pred.mean()))
-            
-            n_batches = pred.sum() // bs + 1 if pred.sum() % bs != 0 else pred.sum() // bs
-            n_batches = n_batches.long().item()
-            ind_to_fool = (pred == 1).nonzero().squeeze()
-            
-            # run the attack
-            pred_adv = pred.clone()
-            for counter in range(n_batches):
-                x_curr = x_test[ind_to_fool[counter * bs:(counter + 1) * bs]].cuda()
-                y_curr = y_test[ind_to_fool[counter * bs:(counter + 1) * bs]].cuda()
-                qr_curr, adv = adversary.perturb(x_curr, y_curr)
-                
-                output = model(adv.cuda())
-                if not args.targeted:
-                    acc_curr = (output.max(1)[1] == y_curr).float().cpu()
-                else:
-                    acc_curr = (output.max(1)[1] != y_curr).float().cpu()
-                pred_adv[ind_to_fool[counter * bs:(counter + 1) * bs]] = acc_curr.clone()
-                adv_complete[ind_to_fool[counter * bs:(counter + 1) * bs]] = adv.cpu().clone()
-                qr_complete[ind_to_fool[counter * bs:(counter + 1) * bs]] = qr_curr.cpu().clone()
-                
-                print('batch {}/{} - {:.0f} of {} successfully perturbed'.format(
-                    counter + 1, n_batches, x_curr.shape[0] - acc_curr.sum(), x_curr.shape[0]))
-                
-            adversary.logger.log('robust accuracy {:.2%}'.format(pred_adv.float().mean()))
-            
-            # check robust accuracy and other statistics
-            acc = 0.
-            for counter in range(x_test.shape[0] // bs):
-                x_curr = adv_complete[counter * bs:(counter + 1) * bs].cuda()
-                y_curr = y_test[counter * bs:(counter + 1) * bs].cuda()
-                output = model(x_curr)
-                if not args.targeted:
-                    acc += (output.max(1)[1] == y_curr).float().sum().item()
-                else:
-                    acc += (output.max(1)[1] != y_curr).float().sum().item()
-            
-            adversary.logger.log('robust accuracy {:.2%}'.format(acc / args.n_ex))
-            
-            res = (adv_complete - x_test != 0.).max(dim=1)[0].sum(dim=(1, 2))
-            adversary.logger.log('max L0 perturbation ({}) {:.0f} - nan in img {} - max img {:.5f} - min img {:.5f}'.format(
-                str_space, res.max(), (adv_complete != adv_complete).sum(), adv_complete.max(), adv_complete.min()))
-                
-            ind_corrcl = pred == 1.
-            ind_succ = (pred_adv == 0.) * (pred == 1.)
-            
-            str_stats = 'success rate={:.0f}/{:.0f} ({:.2%}) \n'.format(
-                pred.sum() - pred_adv.sum(), pred.sum(), (pred.sum() - pred_adv.sum()).float() / pred.sum()) +\
-                '[successful points] avg # queries {:.1f} - med # queries {:.1f}\n'.format(
-                qr_complete[ind_succ].float().mean(), torch.median(qr_complete[ind_succ].float()))
-            qr_complete[~ind_succ] = args.n_queries + 0
-            str_stats += '[correctly classified points] avg # queries {:.1f} - med # queries {:.1f}\n'.format(
-                qr_complete[ind_corrcl].float().mean(), torch.median(qr_complete[ind_corrcl].float()))
-            adversary.logger.log(str_stats)
-            
-            # save results depending on the threat model
-            if args.norm in ['L0', 'patches', 'frames']:
-                if args.use_feature_space:
-                    # reshape perturbed images to original rgb format
-                    bs, _, h, w = adv_complete.shape
-                    adv_complete = adv_complete.view(bs, 3, h, w // 3)
-                torch.save({'adv': adv_complete, 'qr': qr_complete},
-                    '{}/{}.pth'.format(savedir, param_run))
-                    
-            elif args.norm in ['patches_universal']:
-                # extract and save patch
-                ind = (res > 0).nonzero().squeeze()[0]
-                ind_patch = (((adv_complete[ind] - x_test[ind]).abs() > 0).max(0)[0] > 0).nonzero().squeeze()
-                t = [ind_patch[:, 0].min().item(), ind_patch[:, 0].max().item(), ind_patch[:, 1].min().item(), ind_patch[:, 1].max().item()]
-                loc = torch.tensor([t[0], t[2]])
-                s = t[1] - t[0] + 1
-                patch = adv_complete[ind, :, loc[0]:loc[0] + s, loc[1]:loc[1] + s].unsqueeze(0)
-                
-                torch.save({'adv': adv_complete, 'patch': patch},
-                    '{}/{}.pth'.format(savedir, param_run))
 
-            elif args.norm in ['frames_universal']:
-                # extract and save frame and indeces of the perturbed pixels
-                # to easily apply the frame to new images
-                ind_img = (res > 0).nonzero().squeeze()[0]
-                mask = torch.zeros(x_test.shape[-2:])
-                s = int(args.eps)
-                mask[:s] = 1.
-                mask[-s:] = 1.
-                mask[:, :s] = 1.
-                mask[:, -s:] = 1.
-                ind = (mask == 1.).nonzero().squeeze()
-                frame = adv_complete[ind_img, :, ind[:, 0], ind[:, 1]]
+    elif args.dataset == 'YFCC26k':
+        pass
+
+
+    if args.model.tolower() == "geoclip":
+        model = GeoCLIP()
+        model.to(device=args.device)
+        model.eval()
+    elif args.model.tolower() == "clip":
+        model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+        processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+
+    
+        
+    # run Sparse-RS attacks
+    logsdir = '{}/logs_{}_{}'.format(args.save_dir, "sparse_rs", args.norm)
+    savedir = '{}/{}_{}'.format(args.save_dir, "sparse_rs", args.norm)
+    if not os.path.exists(savedir):
+        os.makedirs(savedir)
+    if not os.path.exists(logsdir):
+        os.makedirs(logsdir)
+    
+    if args.targeted or 'universal' in args.norm:
+        args.loss = 'ce'
+    data_loader = testiter if 'universal' in args.norm else None
+    if args.use_feature_space:
+        # reshape images to single color channel to perturb them individually
+        assert args.norm == 'L0'
+        bs, c, h, w = x_test.shape
+        x_test = x_test.view(bs, 1, h, w * c)
+        model = SingleChannelModel(model)
+        str_space = 'feature space'
+    else:
+        str_space = 'pixel space'
+    
+    param_run = '{}_{}_{}_1_{}_nqueries_{:.0f}_pinit_{:.2f}_loss_{}_eps_{:.0f}_targeted_{}_targetclass_{}_seed_{:.0f}'.format(
+        "sparse_rs", args.norm, args.model, args.n_ex, args.n_queries, args.p_init,
+        args.loss, args.eps, args.targeted, args.target_class, args.seed)
+    if args.constant_schedule:
+        param_run += '_constantpinit'
+    if args.use_feature_space:
+        param_run += '_featurespace'
+    
+    from rs_attacks import RSAttack
+    adversary = RSAttack(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
+        p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
+        loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
+        data_loader=data_loader, resample_loc=args.resample_loc)
+    
+    # set target classes
+    if args.targeted and 'universal' in args.norm:
+        if args.target_class is None:
+            y_test = torch.ones_like(y_test) * torch.randint(1000, size=[1]).to(y_test.device)
+        else:
+            y_test = torch.ones_like(y_test) * args.target_class
+        print('target labels', y_test)
+    
+    elif args.targeted:
+        y_test = random_target_classes(y_test, 1000)
+        print('target labels', y_test)
+    
+    bs = min(args.bs, 500)
+    assert args.n_ex % args.bs == 0
+    adv_complete = x_test.clone()
+    qr_complete = torch.zeros([x_test.shape[0]]).cpu()
+    pred = torch.zeros([0]).float().cpu()
+    with torch.no_grad():
+        # find points originally correctly classified
+        for counter in range(x_test.shape[0] // bs):
+            x_curr = x_test[counter * bs:(counter + 1) * bs].cuda()
+            y_curr = y_test[counter * bs:(counter + 1) * bs].cuda()
+            output = model(x_curr)
+            if not args.targeted:
+                pred = torch.cat((pred, (output.max(1)[1] == y_curr).float().cpu()), dim=0)
+            else:
+                pred = torch.cat((pred, (output.max(1)[1] != y_curr).float().cpu()), dim=0)
+        
+        adversary.logger.log('clean accuracy {:.2%}'.format(pred.mean()))
+        
+        n_batches = pred.sum() // bs + 1 if pred.sum() % bs != 0 else pred.sum() // bs
+        n_batches = n_batches.long().item()
+        ind_to_fool = (pred == 1).nonzero().squeeze()
+        
+        # run the attack
+        pred_adv = pred.clone()
+        for counter in range(n_batches):
+            x_curr = x_test[ind_to_fool[counter * bs:(counter + 1) * bs]].cuda()
+            y_curr = y_test[ind_to_fool[counter * bs:(counter + 1) * bs]].cuda()
+            qr_curr, adv = adversary.perturb(x_curr, y_curr)
+            
+            output = model(adv.cuda())
+            if not args.targeted:
+                acc_curr = (output.max(1)[1] == y_curr).float().cpu()
+            else:
+                acc_curr = (output.max(1)[1] != y_curr).float().cpu()
+            pred_adv[ind_to_fool[counter * bs:(counter + 1) * bs]] = acc_curr.clone()
+            adv_complete[ind_to_fool[counter * bs:(counter + 1) * bs]] = adv.cpu().clone()
+            qr_complete[ind_to_fool[counter * bs:(counter + 1) * bs]] = qr_curr.cpu().clone()
+            
+            print('batch {}/{} - {:.0f} of {} successfully perturbed'.format(
+                counter + 1, n_batches, x_curr.shape[0] - acc_curr.sum(), x_curr.shape[0]))
+            
+        adversary.logger.log('robust accuracy {:.2%}'.format(pred_adv.float().mean()))
+        
+        # check robust accuracy and other statistics
+        acc = 0.
+        for counter in range(x_test.shape[0] // bs):
+            x_curr = adv_complete[counter * bs:(counter + 1) * bs].cuda()
+            y_curr = y_test[counter * bs:(counter + 1) * bs].cuda()
+            output = model(x_curr)
+            if not args.targeted:
+                acc += (output.max(1)[1] == y_curr).float().sum().item()
+            else:
+                acc += (output.max(1)[1] != y_curr).float().sum().item()
+        
+        adversary.logger.log('robust accuracy {:.2%}'.format(acc / args.n_ex))
+        
+        res = (adv_complete - x_test != 0.).max(dim=1)[0].sum(dim=(1, 2))
+        adversary.logger.log('max L0 perturbation ({}) {:.0f} - nan in img {} - max img {:.5f} - min img {:.5f}'.format(
+            str_space, res.max(), (adv_complete != adv_complete).sum(), adv_complete.max(), adv_complete.min()))
+            
+        ind_corrcl = pred == 1.
+        ind_succ = (pred_adv == 0.) * (pred == 1.)
+        
+        str_stats = 'success rate={:.0f}/{:.0f} ({:.2%}) \n'.format(
+            pred.sum() - pred_adv.sum(), pred.sum(), (pred.sum() - pred_adv.sum()).float() / pred.sum()) +\
+            '[successful points] avg # queries {:.1f} - med # queries {:.1f}\n'.format(
+            qr_complete[ind_succ].float().mean(), torch.median(qr_complete[ind_succ].float()))
+        qr_complete[~ind_succ] = args.n_queries + 0
+        str_stats += '[correctly classified points] avg # queries {:.1f} - med # queries {:.1f}\n'.format(
+            qr_complete[ind_corrcl].float().mean(), torch.median(qr_complete[ind_corrcl].float()))
+        adversary.logger.log(str_stats)
+        
+        # save results depending on the threat model
+        if args.norm in ['L0', 'patches', 'frames']:
+            if args.use_feature_space:
+                # reshape perturbed images to original rgb format
+                bs, _, h, w = adv_complete.shape
+                adv_complete = adv_complete.view(bs, 3, h, w // 3)
+            torch.save({'adv': adv_complete, 'qr': qr_complete},
+                '{}/{}.pth'.format(savedir, param_run))
                 
-                torch.save({'adv': adv_complete, 'frame': frame, 'ind': ind},
-                    '{}/{}.pth'.format(savedir, param_run))
+        elif args.norm in ['patches_universal']:
+            # extract and save patch
+            ind = (res > 0).nonzero().squeeze()[0]
+            ind_patch = (((adv_complete[ind] - x_test[ind]).abs() > 0).max(0)[0] > 0).nonzero().squeeze()
+            t = [ind_patch[:, 0].min().item(), ind_patch[:, 0].max().item(), ind_patch[:, 1].min().item(), ind_patch[:, 1].max().item()]
+            loc = torch.tensor([t[0], t[2]])
+            s = t[1] - t[0] + 1
+            patch = adv_complete[ind, :, loc[0]:loc[0] + s, loc[1]:loc[1] + s].unsqueeze(0)
+            
+            torch.save({'adv': adv_complete, 'patch': patch},
+                '{}/{}.pth'.format(savedir, param_run))
+
+        elif args.norm in ['frames_universal']:
+            # extract and save frame and indeces of the perturbed pixels
+            # to easily apply the frame to new images
+            ind_img = (res > 0).nonzero().squeeze()[0]
+            mask = torch.zeros(x_test.shape[-2:])
+            s = int(args.eps)
+            mask[:s] = 1.
+            mask[-s:] = 1.
+            mask[:, :s] = 1.
+            mask[:, -s:] = 1.
+            ind = (mask == 1.).nonzero().squeeze()
+            frame = adv_complete[ind_img, :, ind[:, 0], ind[:, 1]]
+            
+            torch.save({'adv': adv_complete, 'frame': frame, 'ind': ind},
+                '{}/{}.pth'.format(savedir, param_run))
     
