@@ -11,7 +11,7 @@ from torchvision import models as torch_models
 from geoclip.model.GeoCLIP import GeoCLIP
 from transformers import CLIPProcessor, CLIPModel
 from data.Im2GPS3k.download import get_transforms, get_im2gps_dataloader
-from sparse_rs.rs_attacks_geoclip import RSAttackGeoCLIP
+from sparse_rs.attack_geoclip import AttackGeoCLIP
 
 import sys
 import time
@@ -181,8 +181,8 @@ if __name__ == '__main__':
     #     data_loader=data_loader, resample_loc=args.resample_loc)
 
     if args.model.lower() == "geoclip":
-        from rs_attacks_geoclip import RSAttackGeoCLIP
-        adversary = RSAttackGeoCLIP(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
+        from sparse_rs.attack_geoclip import AttackGeoCLIP
+        adversary = AttackGeoCLIP(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
             p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
             loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
             data_loader=data_loader, resample_loc=args.resample_loc)
