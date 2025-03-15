@@ -27,21 +27,23 @@ def download_data(data_dir):
     Ensure that the dataset (images + CSV files) is present.
     Run the shell scripts to download them if they are missing.
     """
-    images_path = os.path.join(data_dir, 'Im2GPS3k', 'images')
-    csv_path_1 = os.path.join(data_dir, 'Im2GPS3k', 'im2gps3k_places365.csv')
-    csv_path_2 = os.path.join(data_dir, 'Im2GPS3k', 'im2gps_places365.csv')
-    download_images_path = os.path.join(data_dir, 'Im2GPS3k', 'download_images.sh')
-    download_csv_path = os.path.join(data_dir, 'Im2GPS3k', 'download_csv.sh')
+    Im2GPS3k_path = os.path.join(data_dir, 'Im2GPS3k')
+    images_path = os.path.join(Im2GPS3k_path, 'images')
+    csv_path_1 = os.path.join(Im2GPS3k_path, 'im2gps3k_places365.csv')
+    csv_path_2 = os.path.join(Im2GPS3k_path, 'im2gps_places365.csv')
+    download_images_path = os.path.join(Im2GPS3k_path, 'download_images.sh')
+    download_csv_path = os.path.join(Im2GPS3k_path, 'download_csv.sh')
 
-    # 1. Download images if they don't exist
-    if not os.path.exists(images_path):
-        print("Images directory not found. Downloading dataset...")
-        subprocess.run(["bash", download_images_path])
+    # # 1. Download images if they don't exist
+    # if not os.path.exists(images_path):
+    #     print("Images directory not found. Downloading dataset...")
+    #     subprocess.run(["bash", download_images_path, Im2GPS3k_path])
 
     # 2. Download CSVs if they don't exist
-    if not os.path.exists(csv_path_1) or not os.path.exists(csv_path_2):
+    # if not os.path.exists(csv_path_1) or not os.path.exists(csv_path_2):
+    if not os.path.exists(csv_path_1):
         print("CSV file(s) not found. Downloading CSVs...")
-        subprocess.run(["bash", download_csv_path])
+        subprocess.run(["bash", download_csv_path, Im2GPS3k_path])
 
 
 class Im2GPSDataset(Dataset):
@@ -76,17 +78,19 @@ class Im2GPSDataset(Dataset):
         
         if self.transform:
             image = self.transform(image)
+
+        target = torch.tensor([lat, lon], dtype=torch.float)
         
         # Return (image, (lat, lon)) 
-        return image, (lat, lon)
+        return image, target
 
 
 def get_im2gps_dataloader(
         data_dir,
         batch_size,
-        transform=None, 
+        # transform=None, 
         shuffle=True, 
-        num_workers=4,
+        num_workers=2,
         csv_version='im2gps3k_places365.csv'):
     """
     Main function to:
@@ -114,7 +118,7 @@ def get_im2gps_dataloader(
     dataset = Im2GPSDataset(
         images_dir=images_path,
         csv_path=csv_path,
-        transform=transform
+        transform=get_transforms()
     )
     
     # 4. Create the DataLoader
@@ -129,7 +133,7 @@ def get_im2gps_dataloader(
 
 
 def load_im2gps_data(data_dir,
-                     transform=None,
+                    #  transform=None,
                      csv_version='im2gps3k_places365.csv'):
     """
     Make sure data is available, then load images and their lat/lon from CSV into memory.
@@ -162,10 +166,13 @@ def load_im2gps_data(data_dir,
         
         # Load the image
         image = Image.open(img_path).convert("RGB")
+        image = get_transforms()(image)
+
+        # image = transforms.PILToTensor(image)
         
         # If a transform is provided (e.g., resize, normalization), apply it
-        if transform:
-            image = transform(image)
+        # if transform:
+        #     image = transform(image)
         
         # Append to our lists
         X.append(image)

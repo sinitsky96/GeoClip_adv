@@ -119,7 +119,7 @@ class GeoCLIP(nn.Module):
     
 
     @torch.no_grad()
-    def predict_from_tensor(self, image_tensor, top_k, apply_transforms=False):
+    def predict_from_tensor(self, image_tensor, top_k=1, apply_transforms=False):
         """Given an image tensor, predict the top k GPS coordinates
         
         Args:
@@ -171,7 +171,11 @@ class GeoCLIP(nn.Module):
             
             # Get top k predictions
             top_pred = torch.topk(probs_per_image, top_k, dim=1)
-            top_pred_gps = self.gps_gallery[top_pred.indices[0]]
-            top_pred_prob = top_pred.values[0]
+            top_pred_gps = self.gps_gallery[top_pred.indices]
+            top_pred_prob = top_pred.values
+
+            if top_pred_gps.shape[0] == 1:
+                top_pred_gps = top_pred_gps.squeeze(0)
+                top_pred_prob = top_pred_prob.squeeze(0)
             
             return top_pred_gps, top_pred_prob

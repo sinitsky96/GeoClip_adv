@@ -1,47 +1,16 @@
 import os
 import argparse
 import torch
-import torch.nn as nn
-
-import torchvision.datasets as datasets
-import torch.utils.data as data
-import torchvision.transforms as transforms
-from torchvision import models as torch_models
 
 from geoclip.model.GeoCLIP import GeoCLIP
+from data.Im2GPS3k.download import get_im2gps_dataloader
+from sparse_rs.attack_geoclip import AttackGeoCLIP, haversine_distance
 from transformers import CLIPProcessor, CLIPModel
-from data.Im2GPS3k.download import get_transforms, get_im2gps_dataloader
-from sparse_rs.attack_geoclip import AttackGeoCLIP
 
-import sys
-import time
 from datetime import datetime
 
 from utils import SingleChannelModel
 
-model_class_dict = {'pt_vgg': torch_models.vgg16_bn,
-                    'pt_resnet': torch_models.resnet50,
-                    }
-
-class PretrainedModel():
-    def __init__(self, modelname):
-        model_pt = model_class_dict[modelname](pretrained=True)
-        #model.eval()
-        self.model = nn.DataParallel(model_pt.cuda())
-        self.model.eval()
-        self.mu = torch.Tensor([0.485, 0.456, 0.406]).float().view(1, 3, 1, 1).cuda()
-        self.sigma = torch.Tensor([0.229, 0.224, 0.225]).float().view(1, 3, 1, 1).cuda()
-
-    def predict(self, x):
-        out = (x - self.mu) / self.sigma
-        return self.model(out)
-
-    def forward(self, x):
-        out = (x - self.mu) / self.sigma
-        return self.model(out)
-
-    def __call__(self, x):
-        return self.predict(x)
 
 def random_target_classes(y_pred, n_classes):
     y = torch.zeros_like(y_pred)
@@ -102,29 +71,6 @@ if __name__ == '__main__':
     torch.cuda.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
-    # if args.data_path is None:
-    #     args.data_path = "/scratch/datasets/imagenet/val"
-    # if args.dataset == 'ImageNet':
-    #     # load pretrained model
-    #     model = PretrainedModel(args.model)
-    #     assert not model.model.training
-    #     print(model.model.training)
-        
-    #     # load data
-    #     IMAGENET_SL = 224
-    #     IMAGENET_PATH = args.data_path
-    #     imagenet = datasets.ImageFolder(IMAGENET_PATH,
-    #                            transforms.Compose([
-    #                                transforms.Resize(IMAGENET_SL),
-    #                                transforms.CenterCrop(IMAGENET_SL),
-    #                                transforms.ToTensor()
-    #                            ]))
-    
-    #     test_loader = data.DataLoader(imagenet, batch_size=args.bs, shuffle=True, num_workers=0)
-        
-    #     testiter = iter(test_loader)
-    #     x_test, y_test = next(testiter)
-
     if args.dataset == 'Im2GPS3k':
         test_loader = get_im2gps_dataloader(args.data_path,
                                             batch_size=args.bs)
@@ -135,11 +81,11 @@ if __name__ == '__main__':
         pass
 
 
-    if args.model.tolower() == "geoclip":
+    if args.model.lower() == "geoclip":
         model = GeoCLIP()
         model.to(device=args.device)
         model.eval()
-    elif args.model.tolower() == "clip":
+    elif args.model.lower() == "clip":
         model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
         processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
 
@@ -215,11 +161,24 @@ if __name__ == '__main__':
         for counter in range(x_test.shape[0] // bs):
             x_curr = x_test[counter * bs:(counter + 1) * bs].cuda()
             y_curr = y_test[counter * bs:(counter + 1) * bs].cuda()
-            output = model(x_curr)
-            if not args.targeted:
-                pred = torch.cat((pred, (output.max(1)[1] == y_curr).float().cpu()), dim=0)
+            if args.model.lower() == "geoclip":
+                output, _ = model.predict_from_tensor(x_curr)
+            else: #CLIP
+                output = model(x_curr)
+
+            print(f"output shape: {output.shape}")
+            print(f"y_curr shape: {y_curr.shape}")
+
+            if args.model.lower() == "geoclip":
+                if not args.targeted:
+                    pred = torch.cat((pred, (haversine_distance(output, y_curr) <= 1).float().cpu()), dim=0)
+                else:
+                    pred = torch.cat((pred, (haversine_distance(output, y_curr) > 1).float().cpu()), dim=0)
             else:
-                pred = torch.cat((pred, (output.max(1)[1] != y_curr).float().cpu()), dim=0)
+                if not args.targeted:
+                    pred = torch.cat((pred, (output.max(1)[1] == y_curr).float().cpu()), dim=0)
+                else:
+                    pred = torch.cat((pred, (output.max(1)[1] != y_curr).float().cpu()), dim=0)
         
         adversary.logger.log('clean accuracy {:.2%}'.format(pred.mean()))
         
@@ -234,11 +193,24 @@ if __name__ == '__main__':
             y_curr = y_test[ind_to_fool[counter * bs:(counter + 1) * bs]].cuda()
             qr_curr, adv = adversary.perturb(x_curr, y_curr)
             
-            output = model(adv.cuda())
-            if not args.targeted:
-                acc_curr = (output.max(1)[1] == y_curr).float().cpu()
+            # output = model(adv.cuda())
+            if args.model.lower() == "geoclip":
+                output, _ = model.predict_from_tensor(adv.cuda())
+            else: #CLIP
+                output = model(adv.cuda())
+
+            if args.model.lower() == "geoclip":
+                if not args.targeted:
+                    acc_curr = (haversine_distance(output, y_curr) <= 1).float().cpu()
+                else:
+                    acc_curr = (haversine_distance(output, y_curr) > 1).float().cpu()
             else:
-                acc_curr = (output.max(1)[1] != y_curr).float().cpu()
+                if not args.targeted:
+                    acc_curr = (output.max(1)[1] == y_curr).float().cpu()
+                else:
+                    acc_curr = (output.max(1)[1] != y_curr).float().cpu()
+
+            
             pred_adv[ind_to_fool[counter * bs:(counter + 1) * bs]] = acc_curr.clone()
             adv_complete[ind_to_fool[counter * bs:(counter + 1) * bs]] = adv.cpu().clone()
             qr_complete[ind_to_fool[counter * bs:(counter + 1) * bs]] = qr_curr.cpu().clone()
@@ -253,11 +225,26 @@ if __name__ == '__main__':
         for counter in range(x_test.shape[0] // bs):
             x_curr = adv_complete[counter * bs:(counter + 1) * bs].cuda()
             y_curr = y_test[counter * bs:(counter + 1) * bs].cuda()
-            output = model(x_curr)
-            if not args.targeted:
-                acc += (output.max(1)[1] == y_curr).float().sum().item()
+            # output = model(x_curr)
+            
+            if args.model.lower() == "geoclip":
+                output, _ = model.predict_from_tensor(x_curr)
+            else: #CLIP
+                output = model(x_curr)
+                
+            print("output shape" + output.shape)
+            print("y_curr shape" + y_curr.shape)
+
+            if args.model.lower() == "geoclip":
+                if not args.targeted:
+                    acc += (haversine_distance(output, y_curr) <= 1).float().sum().item()
+                else:
+                    acc += (haversine_distance(output, y_curr) > 1).float().sum().item()
             else:
-                acc += (output.max(1)[1] != y_curr).float().sum().item()
+                if not args.targeted:
+                    acc += (output.max(1)[1] == y_curr).float().sum().item()
+                else:
+                    acc += (output.max(1)[1] != y_curr).float().sum().item()
         
         adversary.logger.log('robust accuracy {:.2%}'.format(acc / args.n_ex))
         
