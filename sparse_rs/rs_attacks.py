@@ -20,6 +20,7 @@ import copy
 import sys
 from utils import Logger
 import os
+from sparse_rs.util import haversine_distance
 
 
 class RSAttack():
@@ -66,7 +67,9 @@ class RSAttack():
             init_patches='random_squares',
             resample_loc=None,
             data_loader=None,
-            update_loc_period=None):
+            update_loc_period=None,
+            geoclip_attack=True
+            ):
         """
         Sparse-RS implementation in PyTorch
         """
@@ -89,7 +92,7 @@ class RSAttack():
         self.resample_loc = n_queries // 10 if resample_loc is None else resample_loc
         self.data_loader = data_loader
         self.update_loc_period = update_loc_period if not update_loc_period is None else 4 if not targeted else 10
-        
+        self.geoclip_attack = geoclip_attack
     
     def margin_and_loss(self, x, y):
         """
@@ -912,10 +915,16 @@ class RSAttack():
         else:
             y = y.detach().clone().long().to(self.device)
 
-        if not self.targeted:
-            acc = self.predict(x).max(1)[1] == y
-        else:
-            acc = self.predict(x).max(1)[1] != y
+        if self.geoclip_attack: # distance
+            if not self.targeted:
+                acc = haversine_distance(self.predict(x), y) <= 1
+            else:
+                acc = haversine_distance(self.predict(x), y) > 1
+        else: # classes
+            if not self.targeted:
+                acc = self.predict(x).max(1)[1] == y
+            else:
+                acc = self.predict(x).max(1)[1] != y
 
         startt = time.time()
 
@@ -934,10 +943,18 @@ class RSAttack():
                 qr_curr, adv_curr = self.attack_single_run(x_to_fool, y_to_fool)
 
                 output_curr = self.predict(adv_curr)
-                if not self.targeted:
-                    acc_curr = output_curr.max(1)[1] == y_to_fool
-                else:
-                    acc_curr = output_curr.max(1)[1] != y_to_fool
+                if self.geoclip_attack: # distance
+                    if not self.targeted:
+                        acc_curr = haversine_distance(output_curr, y_to_fool) <= 1
+                    else:
+                        acc_curr = haversine_distance(output_curr, y_to_fool) > 1
+                else: # classes
+                    if not self.targeted:
+                        acc_curr = output_curr.max(1)[1] == y_to_fool
+                    else:
+                        acc_curr = output_curr.max(1)[1] != y_to_fool
+
+
                 ind_curr = (acc_curr == 0).nonzero().squeeze()
 
                 acc[ind_to_fool[ind_curr]] = 0

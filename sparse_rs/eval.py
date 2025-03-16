@@ -4,7 +4,8 @@ import torch
 
 from geoclip.model.GeoCLIP import GeoCLIP
 from data.Im2GPS3k.download import get_im2gps_dataloader
-from sparse_rs.attack_geoclip import AttackGeoCLIP, haversine_distance
+from sparse_rs.attack_geoclip import AttackGeoCLIP
+from sparse_rs.util import haversine_distance
 from transformers import CLIPProcessor, CLIPModel
 
 from datetime import datetime
@@ -70,6 +71,8 @@ if __name__ == '__main__':
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
+
+    device = torch.device( args.device if torch.cuda.is_available() else "cpu" )
 
     if args.dataset == 'Im2GPS3k':
         test_loader = get_im2gps_dataloader(args.data_path,
@@ -159,16 +162,16 @@ if __name__ == '__main__':
     with torch.no_grad():
         # find points originally correctly classified
         for counter in range(x_test.shape[0] // bs):
-            x_curr = x_test[counter * bs:(counter + 1) * bs].cuda()
-            y_curr = y_test[counter * bs:(counter + 1) * bs].cuda()
+            x_curr = x_test[counter * bs:(counter + 1) * bs].to(device)
+            y_curr = y_test[counter * bs:(counter + 1) * bs].to(device)
             if args.model.lower() == "geoclip":
                 output, _ = model.predict_from_tensor(x_curr)
             else: #CLIP
                 output = model(x_curr)
 
-            print(f"output shape: {output.shape}")
-            print(f"y_curr shape: {y_curr.shape}")
-
+            output = output.to(device=device)
+            y_curr = y_curr.to(device=device)
+            
             if args.model.lower() == "geoclip":
                 if not args.targeted:
                     pred = torch.cat((pred, (haversine_distance(output, y_curr) <= 1).float().cpu()), dim=0)

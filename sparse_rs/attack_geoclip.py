@@ -1,29 +1,6 @@
 import torch
-import torch.nn.functional as F
-import math
-from rs_attacks import RSAttack  # reuse existing Sparse-RS implementation
-
-def haversine_distance(coord1, coord2):
-    """
-    Compute the Haversine distance (in kilometers) between two sets of (lat, lon) coordinates.
-    Both coord1 and coord2 should be tensors of shape (..., 2) with lat, lon in degrees.
-    This function is vectorized over any leading dimensions.
-    """
-    R = 6371.0  # Earth radius in kilometers
-
-    # Convert degrees to radians.
-    lat1 = coord1[..., 0] * math.pi / 180.0
-    lon1 = coord1[..., 1] * math.pi / 180.0
-    lat2 = coord2[..., 0] * math.pi / 180.0
-    lon2 = coord2[..., 1] * math.pi / 180.0
-
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-
-    a = torch.sin(dlat / 2) ** 2 + torch.cos(lat1) * torch.cos(lat2) * torch.sin(dlon / 2) ** 2
-    c = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1 - a))
-    distance = R * c
-    return distance
+from rs_attacks import RSAttack
+from sparse_rs.util import haversine_distance
 
 class GeoCLIPPredictor():
     """
@@ -122,7 +99,7 @@ class AttackGeoCLIP(RSAttack): # TODO: add an abstract attack class to all the a
             loss = margin
         else:
             # For targeted attacks, a different threshold can be used (e.g., self.tau_target)
-            margin = distances - self.tau_target  # example formulation
+            margin = distances - self.tau_target
             loss = margin
         
         return margin, loss
