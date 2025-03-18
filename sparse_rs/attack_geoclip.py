@@ -86,7 +86,8 @@ class AttackGeoCLIP(RSAttack): # TODO: add an abstract attack class to all the a
         # Obtain top-k predictions (B, top_k, 2) and their probabilities (B, top_k)
         top_pred_gps, top_pred_prob = self.predict.predict_topk(x, self.top_k)
         # Expand ground-truth coordinates to shape (B, top_k, 2)
-        y_expanded = y.unsqueeze(1).expand_as(top_pred_gps)
+        y_d = y.clone().detach().to(top_pred_gps.device)
+        y_expanded = y_d.unsqueeze(1).expand_as(top_pred_gps)
         # Compute haversine distances for each top prediction; result is shape (B, top_k)
         distances = haversine_distance(top_pred_gps, y_expanded)
         # For each sample, take the minimum distance among the top-k predictions

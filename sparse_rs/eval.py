@@ -228,8 +228,8 @@ if __name__ == '__main__':
             x_curr = x_test[ind_to_fool[start_idx:end_idx]].clone().detach().to(device)
             y_curr = y_test[ind_to_fool[start_idx:end_idx]].clone().detach().to(device)
 
-            print(f"x_curr shape before qr_curr, adv = adversary.perturb(x_curr, y_curr): {x_curr.shape}")
-            print(f"x_curr device: {x_curr.device}, y_curr device: {y_curr.device}")
+            # print(f"x_curr shape before qr_curr, adv = adversary.perturb(x_curr, y_curr): {x_curr.shape}")
+            # print(f"x_curr device: {x_curr.device}, y_curr device: {y_curr.device}")
 
             qr_curr, adv = adversary.perturb(x_curr, y_curr)
             
@@ -283,8 +283,8 @@ if __name__ == '__main__':
             else: #CLIP
                 output = model(x_curr)
                 
-            print(f"output shape: {output.shape}")
-            print(f"y_curr shape: {y_curr.shape}")
+            # print(f"output shape: {output.shape}")
+            # print(f"y_curr shape: {y_curr.shape}")
 
             output = output.to(device=cpu_device)
             # y_curr = y_curr.to(device=device)
