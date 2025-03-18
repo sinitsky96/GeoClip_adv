@@ -20,7 +20,7 @@ import copy
 import sys
 from utils import Logger
 import os
-from sparse_rs.util import haversine_distance
+from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
 
 
 class RSAttack():
@@ -283,6 +283,10 @@ class RSAttack():
                     x_best[img, :, ind_p // w, ind_p % w] = self.random_choice([c, eps]).clamp(0., 1.)
                     b_all[img] = ind_p.clone()
                     be_all[img] = ind_np.clone()
+
+                
+                print(f"x_best, y shape before margin_min, loss_min = self.margin_and_loss(x_best, y): {x_best.device}, {y.device}")
+
                     
                 margin_min, loss_min = self.margin_and_loss(x_best, y)
                 n_queries = torch.ones(x.shape[0]).to(self.device)
@@ -295,6 +299,7 @@ class RSAttack():
                     y_curr = y[idx_to_fool]
                     margin_min_curr = margin_min[idx_to_fool]
                     loss_min_curr = loss_min[idx_to_fool]
+
                     b_curr, be_curr = b_all[idx_to_fool], be_all[idx_to_fool]
                     if len(y_curr.shape) == 0:
                         y_curr.unsqueeze_(0)
@@ -916,10 +921,13 @@ class RSAttack():
             y = y.detach().clone().long().to(self.device)
 
         if self.geoclip_attack: # distance
+            print(f"x.shape: {x.shape}")
+            if x.dim() == 5 and x.size(1) == 1:
+                x = x.squeeze(1)
             if not self.targeted:
-                acc = haversine_distance(self.predict(x), y) <= 1
+                acc = haversine_distance(self.predict(x), y) <= CONTINENT_R
             else:
-                acc = haversine_distance(self.predict(x), y) > 1
+                acc = haversine_distance(self.predict(x), y) > STREET_R
         else: # classes
             if not self.targeted:
                 acc = self.predict(x).max(1)[1] == y
@@ -940,14 +948,17 @@ class RSAttack():
                 x_to_fool = x[ind_to_fool].clone()
                 y_to_fool = y[ind_to_fool].clone()
 
+                print(f"x_to_fool, y_to_fool shape before qr_curr, adv_curr = self.attack_single_run(x_to_fool, y_to_fool): {x_to_fool.device}, {y_to_fool.device}")
+
+
                 qr_curr, adv_curr = self.attack_single_run(x_to_fool, y_to_fool)
 
                 output_curr = self.predict(adv_curr)
                 if self.geoclip_attack: # distance
                     if not self.targeted:
-                        acc_curr = haversine_distance(output_curr, y_to_fool) <= 1
+                        acc_curr = haversine_distance(output_curr, y_to_fool) <= CONTINENT_R
                     else:
-                        acc_curr = haversine_distance(output_curr, y_to_fool) > 1
+                        acc_curr = haversine_distance(output_curr, y_to_fool) > STREET_R
                 else: # classes
                     if not self.targeted:
                         acc_curr = output_curr.max(1)[1] == y_to_fool

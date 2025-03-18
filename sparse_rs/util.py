@@ -1,6 +1,13 @@
 import torch
 import math
 
+STREET_R = 1
+CITY_R = 25
+REGION_R = 200
+COUNTRY_R = 750
+CONTINENT_R = 2500
+
+
 def haversine_distance(coord1, coord2):
     """
     Compute the Haversine distance (in kilometers) between two sets of (lat, lon) coordinates.

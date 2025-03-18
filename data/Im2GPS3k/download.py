@@ -75,7 +75,13 @@ class Im2GPSDataset(Dataset):
         
         # Load the image
         image = Image.open(img_path).convert("RGB")
-        
+
+        try: # if an image has multiple frames
+            if getattr(image, "n_frames", 1) > 1:
+                image.seek(0)
+        except Exception:
+            pass
+
         if self.transform:
             image = self.transform(image)
 
@@ -177,5 +183,8 @@ def load_im2gps_data(data_dir,
         # Append to our lists
         X.append(image)
         y.append((lat, lon))
+    
+    X = torch.stack(X, dim=0)  # Shape: [N, C, H, W]
+    y = torch.tensor(y, dtype=torch.float)  # Shape: [N, 2]
 
     return X, y

@@ -174,8 +174,11 @@ class GeoCLIP(nn.Module):
             top_pred_gps = self.gps_gallery[top_pred.indices]
             top_pred_prob = top_pred.values
 
-            if top_pred_gps.shape[0] == 1:
-                top_pred_gps = top_pred_gps.squeeze(0)
-                top_pred_prob = top_pred_prob.squeeze(0)
+            # print(f"top_pred_gps shape: {top_pred_gps.shape}")
+
+            if top_k == 1:
+                top_pred_gps = top_pred_gps.squeeze(1)  # removes the singleton top_k dimension: [100, 1, 2] -> [100, 2]
+                top_pred_prob = top_pred_prob.squeeze(1)  # similarly for the probabilities
+
             
             return top_pred_gps, top_pred_prob

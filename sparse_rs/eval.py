@@ -1,11 +1,13 @@
 import os
 import argparse
 import torch
+import numpy as np
+
 
 from geoclip.model.GeoCLIP import GeoCLIP
-from data.Im2GPS3k.download import get_im2gps_dataloader
+from data.Im2GPS3k.download import load_im2gps_data
 from sparse_rs.attack_geoclip import AttackGeoCLIP
-from sparse_rs.util import haversine_distance
+from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
 from transformers import CLIPProcessor, CLIPModel
 
 from datetime import datetime
@@ -36,7 +38,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--n_restarts', type=int, default=1) # Number of random restarts
     parser.add_argument('--loss', type=str, default='margin') # loss function for the attack, options: 'margin', 'ce'
-    parser.add_argument('--n_ex', type=int, default=1000) # batch size
+    parser.add_argument('--n_ex', type=int, default=1000) # dataset size
+    parser.add_argument('--bs', type=int, default=128) # batch size
     parser.add_argument('--n_queries', type=int, default=1000) # max number of queries, how many times we can prob the model.
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--constant_schedule', action='store_true') 
@@ -63,7 +66,7 @@ if __name__ == '__main__':
 
     
     args.eps = args.k + 0
-    args.bs = args.n_ex + 0
+    # args.bs = args.n_ex + 0
     args.p_init = args.alpha_init + 0.
     args.resample_loc = args.resample_period_univ
     args.update_loc_period = args.loc_update_period
@@ -73,12 +76,13 @@ if __name__ == '__main__':
     torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device( args.device if torch.cuda.is_available() else "cpu" )
+    cpu_device = torch.device("cpu")
 
     if args.dataset == 'Im2GPS3k':
-        test_loader = get_im2gps_dataloader(args.data_path,
-                                            batch_size=args.bs)
-        testiter = iter(test_loader)
-        x_test, y_test = next(testiter)
+        x_test, y_test = load_im2gps_data(args.data_path)
+        n_examples = y_test.shape[0]
+        args.n_ex = n_examples
+        print(f"ytest shape: P{y_test.shape}")
 
     elif args.dataset == 'YFCC26k':
         pass
@@ -104,7 +108,10 @@ if __name__ == '__main__':
     
     if args.targeted or 'universal' in args.norm:
         args.loss = 'ce'
-    data_loader = testiter if 'universal' in args.norm else None
+    # data_loader = testiter if 'universal' in args.norm else None
+
+    data_loader = None # The code uses this in universial attacks, we dont need this.
+
     if args.use_feature_space:
         # reshape images to single color channel to perturb them individually
         assert args.norm == 'L0'
@@ -134,13 +141,13 @@ if __name__ == '__main__':
         adversary = AttackGeoCLIP(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
             p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
             loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
-            data_loader=data_loader, resample_loc=args.resample_loc)
+            data_loader=data_loader, resample_loc=args.resample_loc,device=device)
     else:
         from rs_attacks import RSAttack
         adversary = RSAttack(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
             p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
             loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
-            data_loader=data_loader, resample_loc=args.resample_loc)
+            data_loader=data_loader, resample_loc=args.resample_loc, device=device)
     
     # set target classes
     if args.targeted and 'universal' in args.norm:
@@ -150,33 +157,46 @@ if __name__ == '__main__':
             y_test = torch.ones_like(y_test) * args.target_class
         print('target labels', y_test)
     
-    elif args.targeted:
+    elif args.targeted: # TODO: adjust to lon lat.
         y_test = random_target_classes(y_test, 1000)
         print('target labels', y_test)
     
-    bs = min(args.bs, 500)
-    assert args.n_ex % args.bs == 0
+    # bs = min(args.bs, 500)
+    # assert args.n_ex % args.bs == 0
+    bs = args.bs
+    n_batches = int(np.ceil(n_examples / bs))
     adv_complete = x_test.clone()
     qr_complete = torch.zeros([x_test.shape[0]]).cpu()
     pred = torch.zeros([0]).float().cpu()
     with torch.no_grad():
         # find points originally correctly classified
-        for counter in range(x_test.shape[0] // bs):
-            x_curr = x_test[counter * bs:(counter + 1) * bs].to(device)
-            y_curr = y_test[counter * bs:(counter + 1) * bs].to(device)
+        for batch_idx in range(n_batches):
+            torch.cuda.empty_cache()
+
+            start_idx = batch_idx * bs
+            end_idx = min((batch_idx + 1) * bs, n_examples)
+
+            x_curr = x_test[start_idx:end_idx].clone().detach().to(device)
+            y_curr = y_test[start_idx:end_idx].clone().detach()
+
+            print(f"x_curr shape before output, _ = model.predict_from_tensor(x_curr): {x_curr.shape}")
+            print(f"y_curr shape before output, _ = model.predict_from_tensor(x_curr): {y_curr.shape}")
+
             if args.model.lower() == "geoclip":
                 output, _ = model.predict_from_tensor(x_curr)
             else: #CLIP
                 output = model(x_curr)
 
-            output = output.to(device=device)
-            y_curr = y_curr.to(device=device)
+            print(f"output shape: {output.shape}")
+
+            output = output.to(device=cpu_device)
+            # y_curr = y_curr.to(device=device)
             
             if args.model.lower() == "geoclip":
                 if not args.targeted:
-                    pred = torch.cat((pred, (haversine_distance(output, y_curr) <= 1).float().cpu()), dim=0)
+                    pred = torch.cat((pred, (haversine_distance(output, y_curr) <= CONTINENT_R).float().cpu()), dim=0)
                 else:
-                    pred = torch.cat((pred, (haversine_distance(output, y_curr) > 1).float().cpu()), dim=0)
+                    pred = torch.cat((pred, (haversine_distance(output, y_curr) > STREET_R).float().cpu()), dim=0)
             else:
                 if not args.targeted:
                     pred = torch.cat((pred, (output.max(1)[1] == y_curr).float().cpu()), dim=0)
@@ -185,15 +205,32 @@ if __name__ == '__main__':
         
         adversary.logger.log('clean accuracy {:.2%}'.format(pred.mean()))
         
-        n_batches = pred.sum() // bs + 1 if pred.sum() % bs != 0 else pred.sum() // bs
-        n_batches = n_batches.long().item()
-        ind_to_fool = (pred == 1).nonzero().squeeze()
+        # n_batches = pred.sum() // bs + 1 if pred.sum() % bs != 0 else pred.sum() // bs
+        # n_batches = n_batches.long().item()
+
+        n_batches = int(np.ceil(pred.sum() / bs))
+
+        if args.model.lower() == "geoclip": # TODO: can be changed to try and fool even more every point.
+            ind_to_fool = (pred == 1).nonzero(as_tuple=True)[0]
+        else:
+            ind_to_fool = (pred == 1).nonzero().squeeze()
+
+        # ind_to_fool = ind_to_fool.clone().detach().to(cpu_device)
         
         # run the attack
         pred_adv = pred.clone()
-        for counter in range(n_batches):
-            x_curr = x_test[ind_to_fool[counter * bs:(counter + 1) * bs]].cuda()
-            y_curr = y_test[ind_to_fool[counter * bs:(counter + 1) * bs]].cuda()
+        for batch_idx in range(n_batches):
+            torch.cuda.empty_cache()
+
+            start_idx = batch_idx * bs
+            end_idx = min((batch_idx + 1) * bs, n_examples)
+
+            x_curr = x_test[ind_to_fool[start_idx:end_idx]].clone().detach().to(device)
+            y_curr = y_test[ind_to_fool[start_idx:end_idx]].clone().detach().to(device)
+
+            print(f"x_curr shape before qr_curr, adv = adversary.perturb(x_curr, y_curr): {x_curr.shape}")
+            print(f"x_curr device: {x_curr.device}, y_curr device: {y_curr.device}")
+
             qr_curr, adv = adversary.perturb(x_curr, y_curr)
             
             # output = model(adv.cuda())
@@ -202,11 +239,15 @@ if __name__ == '__main__':
             else: #CLIP
                 output = model(adv.cuda())
 
+            output = output.to(device=cpu_device)
+            y_curr = output.to(device=cpu_device)
+            # y_curr = y_curr.to(device=device)
+
             if args.model.lower() == "geoclip":
                 if not args.targeted:
-                    acc_curr = (haversine_distance(output, y_curr) <= 1).float().cpu()
+                    acc_curr = (haversine_distance(output, y_curr) <= CONTINENT_R).float().cpu()
                 else:
-                    acc_curr = (haversine_distance(output, y_curr) > 1).float().cpu()
+                    acc_curr = (haversine_distance(output, y_curr) > STREET_R).float().cpu()
             else:
                 if not args.targeted:
                     acc_curr = (output.max(1)[1] == y_curr).float().cpu()
@@ -214,20 +255,27 @@ if __name__ == '__main__':
                     acc_curr = (output.max(1)[1] != y_curr).float().cpu()
 
             
-            pred_adv[ind_to_fool[counter * bs:(counter + 1) * bs]] = acc_curr.clone()
-            adv_complete[ind_to_fool[counter * bs:(counter + 1) * bs]] = adv.cpu().clone()
-            qr_complete[ind_to_fool[counter * bs:(counter + 1) * bs]] = qr_curr.cpu().clone()
+            pred_adv[ind_to_fool[start_idx:end_idx]] = acc_curr.clone()
+            adv_complete[ind_to_fool[start_idx:end_idx]] = adv.cpu().clone()
+            qr_complete[ind_to_fool[start_idx:end_idx]] = qr_curr.cpu().clone()
             
             print('batch {}/{} - {:.0f} of {} successfully perturbed'.format(
-                counter + 1, n_batches, x_curr.shape[0] - acc_curr.sum(), x_curr.shape[0]))
+                batch_idx + 1, n_batches, x_curr.shape[0] - acc_curr.sum(), x_curr.shape[0]))
             
         adversary.logger.log('robust accuracy {:.2%}'.format(pred_adv.float().mean()))
         
         # check robust accuracy and other statistics
         acc = 0.
-        for counter in range(x_test.shape[0] // bs):
-            x_curr = adv_complete[counter * bs:(counter + 1) * bs].cuda()
-            y_curr = y_test[counter * bs:(counter + 1) * bs].cuda()
+        n_batches = int(np.ceil(n_examples / bs))
+
+        for batch_idx in range(n_batches):
+            torch.cuda.empty_cache()
+
+            start_idx = batch_idx * bs
+            end_idx = min((batch_idx + 1) * bs, n_examples)
+
+            x_curr = adv_complete[start_idx:end_idx].clone().detach().to(device)
+            y_curr = y_test[start_idx:end_idx].clone().detach()
             # output = model(x_curr)
             
             if args.model.lower() == "geoclip":
@@ -235,14 +283,17 @@ if __name__ == '__main__':
             else: #CLIP
                 output = model(x_curr)
                 
-            print("output shape" + output.shape)
-            print("y_curr shape" + y_curr.shape)
+            print(f"output shape: {output.shape}")
+            print(f"y_curr shape: {y_curr.shape}")
+
+            output = output.to(device=cpu_device)
+            # y_curr = y_curr.to(device=device)
 
             if args.model.lower() == "geoclip":
                 if not args.targeted:
-                    acc += (haversine_distance(output, y_curr) <= 1).float().sum().item()
+                    acc += (haversine_distance(output, y_curr) <= CONTINENT_R).float().sum().item()
                 else:
-                    acc += (haversine_distance(output, y_curr) > 1).float().sum().item()
+                    acc += (haversine_distance(output, y_curr) > STREET_R).float().sum().item()
             else:
                 if not args.targeted:
                     acc += (output.max(1)[1] == y_curr).float().sum().item()
@@ -267,6 +318,9 @@ if __name__ == '__main__':
             qr_complete[ind_corrcl].float().mean(), torch.median(qr_complete[ind_corrcl].float()))
         adversary.logger.log(str_stats)
         
+
+        ################ not really relevant ##########################
+
         # save results depending on the threat model
         if args.norm in ['L0', 'patches', 'frames']:
             if args.use_feature_space:
