@@ -146,21 +146,63 @@ class Attack:
     def eval_pert_untargeted(self, x, y, pert):
         with torch.no_grad():
             output, loss = self.test_pert(x, y, pert)
-            succ = torch.argmax(output, dim=1) != y
+            # For GeoCLIP, we don't have a classification task, so we'll use a success metric based on geodesic distance
+            if isinstance(loss, torch.Tensor) and loss.dim() == 1 and y.dim() == 1 and y.shape[0] == loss.shape[0]:
+                # This is a regression task (geodesic distance)
+                # For untargeted attacks, more negative loss means greater geodesic distance (better attack)
+                # We consider an attack successful if it moves the prediction away from the original location
+                succ = (loss < 0).to(torch.bool)
+            else:
+                # Standard classification task
+                succ = torch.argmax(output, dim=1) != y
             return loss, succ
 
     def eval_pert_targeted(self, x, y, pert):
         with torch.no_grad():
             output, loss = self.test_pert(x, y, pert)
-            succ = torch.argmax(output, dim=1) == y
+            # For GeoCLIP, we don't have a classification task, so we'll use a success metric based on geodesic distance
+            if isinstance(loss, torch.Tensor) and loss.dim() == 1 and y.dim() == 1 and y.shape[0] == loss.shape[0]:
+                # This is a regression task (geodesic distance)
+                # For targeted attacks, more negative loss means closer to target (better attack)
+                # We consider an attack successful if the loss is below a threshold
+                succ = (loss < -4.0).to(torch.bool)  # Threshold of ~4.0 corresponds to being within ~50km
+            else:
+                # Standard classification task
+                succ = torch.argmax(output, dim=1) == y
             return loss, succ
 
     def update_best(self, best_crit, new_crit, best_ls, new_ls):
+        # Handle different tensor dimensions
+        if best_crit.dim() != new_crit.dim():
+            if best_crit.dim() > new_crit.dim():
+                new_crit = new_crit.view(best_crit.shape)
+            else:
+                best_crit = best_crit.view(new_crit.shape)
+        
+        # Create the improvement mask
         improve = new_crit.ge(best_crit)
+        
+        # Update the criterion
         best_crit[improve] = new_crit[improve]
+        
+        # Update the list of tensors
         for idx, best in enumerate(best_ls):
             new = new_ls[idx]
-            best[improve] = new[improve]
+            
+            # Handle image tensors (which have different dimensions than the criterion)
+            if len(best.shape) > len(improve.shape):
+                # For image tensors, we need to expand the improvement mask
+                # to match the tensor dimensions
+                expanded_improve = improve
+                for _ in range(len(best.shape) - len(improve.shape)):
+                    expanded_improve = expanded_improve.unsqueeze(-1)
+                
+                # Expand to match the tensor shape
+                expanded_improve = expanded_improve.expand_as(best)
+                best[expanded_improve] = new[expanded_improve]
+            else:
+                # For tensors with the same dimensions as the criterion
+                best[improve] = new[improve]
 
     def no_dpo(self, pert):
         return pert
