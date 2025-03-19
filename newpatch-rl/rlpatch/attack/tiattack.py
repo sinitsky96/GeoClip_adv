@@ -15,13 +15,16 @@ import torch.nn.functional as F
 import torchvision
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, SubsetRandomSampler
-from facenet_pytorch import MTCNN, InceptionResnetV1
+# from facenet_pytorch import MTCNN, InceptionResnetV1
 import argparse
 from attack.utils import load_ground_truth, Normalize, gkern, DI, get_gaussian_kernel
 from models import *
 from attack import stick
 from mtcnn_pytorch_master.test import crop_face
 from tqdm import tqdm
+
+from geoclip.model.GeoCLIP import GeoCLIP
+from transformers import CLIPProcessor, CLIPModel
 
 import sys
 sys.path.append("../")
@@ -37,7 +40,8 @@ trans = transforms.Compose([
 #localtime = time.asctime( time.localtime(time.time()) )
 inputsize = {'arcface50':[112,112],'cosface50':[112,112],'arcface34':[112,112],'cosface34':[112,112],
              'facenet':[160,160],'insightface':[112,112],
-             'sphere20a':[112,96],'re_sphere20a':[112,96],'mobilefacenet':[112,112]}
+             'sphere20a':[112,96],'re_sphere20a':[112,96],'mobilefacenet':[112,112],
+             'geoclip': [224,224], 'clip': [224,224]}
 
 def DI(x, resize_rate=1.15, diversity_prob=0.7):
     assert resize_rate >= 1.0                                   # 随机放大的尺度上限
@@ -69,62 +73,73 @@ def reward_slope(adv_face_ts, params_slove, sticker,device):
     return mean_slope
 
 def load_model(model_name, device):
-    if(model_name == 'facenet'):
-        resnet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
-        return resnet
-    elif (model_name == 'insightface'):
-        insightface_path = 'stmodels/insightface/insightface.pth'
-        model = Backbone(50,0.6,'ir_se')
-        model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
+    # if(model_name == 'facenet'):
+    #     resnet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
+    #     return resnet
+    # elif (model_name == 'insightface'):
+    #     insightface_path = 'stmodels/insightface/insightface.pth'
+    #     model = Backbone(50,0.6,'ir_se')
+    #     model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
+    #     model.eval()
+    #     model = model.to(device)
+    #     return model
+    # elif (model_name == 'sphere20a'):
+    #     sphere20a_path = 'stmodels/sphere20a/sphere20a.pth'
+    #     model = sphere20a(feature=True)
+    #     model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
+    #     model.eval()
+    #     model = model.to(device)
+    #     return model
+    # elif (model_name == 're_sphere20a'):
+    #     sphere20a_path = 'stmodels/re_sphere20a/re_sphere20a.pth'
+    #     model = sphere20a(feature=True)
+    #     #model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
+    #     model.eval()
+    #     model = model.to(device)
+    #     return model
+    # elif (model_name == 'mobilefacenet'):
+    #     mobilefacenet_path = 'stmodels/mobilefacenet/mobilefacenet_scripted.pt'
+    #     #model = MobileFaceNet()
+    #     #model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
+    #     model = torch.jit.load(eval("{}_path".format(model_name)),map_location=device)
+    #     model.eval()
+    #     model = model.to(device)
+    #     return model
+    # elif (model_name == 'arcface34'):
+    #     arcface34_path = 'stmodels/arcface34/arcface_34.pth'
+    #     model = iresnet34(False, dropout=0, fp16=True)
+    #     model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
+    #     model.eval()
+    #     model = model.to(device)
+    #     return model
+    # elif (model_name == 'cosface34'):
+    #     cosface34_path = 'stmodels/cosface34/cosface_34.pth'
+    #     model = iresnet34(False, dropout=0, fp16=True)
+    #     model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
+    #     model.eval()
+    #     model = model.to(device)
+    #     return model
+    # elif (model_name == 'tencent'):
+    #     return None
+    # else:
+    #     arcface50_path = 'stmodels/arcface50/ms1mv3_arcface_r50_fp16.pth'
+    #     cosface50_path = 'stmodels/cosface50/glint360k_cosface_r50_fp16_0.1.pth'
+    #     model = iresnet50(False, dropout=0, fp16=True)
+    #     model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
+    #     model.eval()
+    #     model = model.to(device)
+    #     return model
+
+    if model_name.lower() == "geoclip":
+        model = GeoCLIP()
+        model.to(device)
         model.eval()
-        model = model.to(device)
-        return model
-    elif (model_name == 'sphere20a'):
-        sphere20a_path = 'stmodels/sphere20a/sphere20a.pth'
-        model = sphere20a(feature=True)
-        model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
+    elif model_name.lower() == "clip":
+        model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+        processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        model.to(device)
         model.eval()
-        model = model.to(device)
-        return model
-    elif (model_name == 're_sphere20a'):
-        sphere20a_path = 'stmodels/re_sphere20a/re_sphere20a.pth'
-        model = sphere20a(feature=True)
-        #model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
-        model.eval()
-        model = model.to(device)
-        return model
-    elif (model_name == 'mobilefacenet'):
-        mobilefacenet_path = 'stmodels/mobilefacenet/mobilefacenet_scripted.pt'
-        #model = MobileFaceNet()
-        #model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
-        model = torch.jit.load(eval("{}_path".format(model_name)),map_location=device)
-        model.eval()
-        model = model.to(device)
-        return model
-    elif (model_name == 'arcface34'):
-        arcface34_path = 'stmodels/arcface34/arcface_34.pth'
-        model = iresnet34(False, dropout=0, fp16=True)
-        model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
-        model.eval()
-        model = model.to(device)
-        return model
-    elif (model_name == 'cosface34'):
-        cosface34_path = 'stmodels/cosface34/cosface_34.pth'
-        model = iresnet34(False, dropout=0, fp16=True)
-        model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
-        model.eval()
-        model = model.to(device)
-        return model
-    elif (model_name == 'tencent'):
-        return None
-    else:
-        arcface50_path = 'stmodels/arcface50/ms1mv3_arcface_r50_fp16.pth'
-        cosface50_path = 'stmodels/cosface50/glint360k_cosface_r50_fp16_0.1.pth'
-        model = iresnet50(False, dropout=0, fp16=True)
-        model.load_state_dict(torch.load(eval("{}_path".format(model_name)),map_location=device))
-        model.eval()
-        model = model.to(device)
-        return model
+
 
 def load_anchors(model_name, device, target):
     anchor_embeddings =  joblib.load('stmodels/{}/embeddings_{}.pkl'.format(model_name,model_name))
@@ -415,23 +430,23 @@ def TI_kernel(nsig):
 #     m = cosin_metric(feature,anchors,device)
 #     print(m)
 
-if __name__=="__main__":
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    args = parse_arguments()
-    dataset = datasets.ImageFolder(args.input_dir)
-    dataset.idx_to_class = {i:c for c, i in dataset.class_to_idx.items()}
+# if __name__=="__main__":
+#     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+#     args = parse_arguments()
+#     dataset = datasets.ImageFolder(args.input_dir)
+#     dataset.idx_to_class = {i:c for c, i in dataset.class_to_idx.items()}
     
-    def collate_fn(x):
-        return x
-    loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=collate_fn
-    )
+#     def collate_fn(x):
+#         return x
+#     loader = DataLoader(
+#         dataset,
+#         batch_size=args.batch_size,
+#         shuffle=False,
+#         collate_fn=collate_fn
+#     )
 
-    fr_model = load_model(args.source_model,device).eval().to(device)
-    if(args.source_model == 'facenet'):
-        inputsize = [160,160]
-    else:
-        inputsize = [112,112]
+#     fr_model = load_model(args.source_model,device).eval().to(device)
+#     if(args.source_model == 'facenet'):
+#         inputsize = [160,160]
+#     else:
+#         inputsize = [112,112]

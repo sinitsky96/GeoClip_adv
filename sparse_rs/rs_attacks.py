@@ -285,7 +285,7 @@ class RSAttack():
                     be_all[img] = ind_np.clone()
 
                 
-                print(f"x_best, y shape before margin_min, loss_min = self.margin_and_loss(x_best, y): {x_best.device}, {y.device}")
+                # print(f"x_best, y device before margin_min, loss_min = self.margin_and_loss(x_best, y): {x_best.device}, {y.device}")
 
                     
                 margin_min, loss_min = self.margin_and_loss(x_best, y)
@@ -921,7 +921,7 @@ class RSAttack():
             y = y.detach().clone().long().to(self.device)
 
         if self.geoclip_attack: # distance
-            print(f"x.shape: {x.shape}")
+            # print(f"x.shape: {x.shape}")
             if x.dim() == 5 and x.size(1) == 1:
                 x = x.squeeze(1)
             if not self.targeted:
@@ -948,7 +948,7 @@ class RSAttack():
                 x_to_fool = x[ind_to_fool].clone()
                 y_to_fool = y[ind_to_fool].clone()
 
-                print(f"x_to_fool, y_to_fool shape before qr_curr, adv_curr = self.attack_single_run(x_to_fool, y_to_fool): {x_to_fool.device}, {y_to_fool.device}")
+                # print(f"x_to_fool, y_to_fool device before qr_curr, adv_curr = self.attack_single_run(x_to_fool, y_to_fool): {x_to_fool.device}, {y_to_fool.device}")
 
 
                 qr_curr, adv_curr = self.attack_single_run(x_to_fool, y_to_fool)
@@ -968,7 +968,7 @@ class RSAttack():
 
                 ind_curr = (acc_curr == 0).nonzero().squeeze()
 
-                acc[ind_to_fool[ind_curr]] = 0
+                acc[ind_to_fool[ind_curr]] = 0 #indecies in acc that were fooled are set to 0
                 adv[ind_to_fool[ind_curr]] = adv_curr[ind_curr].clone()
                 qr[ind_to_fool[ind_curr]] = qr_curr[ind_curr].clone()
                 if self.verbose:

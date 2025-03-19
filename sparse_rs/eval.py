@@ -95,6 +95,8 @@ if __name__ == '__main__':
     elif args.model.lower() == "clip":
         model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
         processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        model.to(device)
+        model.eval()
 
     
         
@@ -130,11 +132,6 @@ if __name__ == '__main__':
     if args.use_feature_space:
         param_run += '_featurespace'
     
-    # from rs_attacks import RSAttack
-    # adversary = RSAttack(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
-    #     p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
-    #     loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
-    #     data_loader=data_loader, resample_loc=args.resample_loc)
 
     if args.model.lower() == "geoclip":
         from sparse_rs.attack_geoclip import AttackGeoCLIP
@@ -148,7 +145,7 @@ if __name__ == '__main__':
             p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
             loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
             data_loader=data_loader, resample_loc=args.resample_loc, device=device)
-    
+        
     # set target classes
     if args.targeted and 'universal' in args.norm:
         if args.target_class is None:
@@ -179,15 +176,15 @@ if __name__ == '__main__':
             x_curr = x_test[start_idx:end_idx].clone().detach().to(device)
             y_curr = y_test[start_idx:end_idx].clone().detach()
 
-            print(f"x_curr shape before output, _ = model.predict_from_tensor(x_curr): {x_curr.shape}")
-            print(f"y_curr shape before output, _ = model.predict_from_tensor(x_curr): {y_curr.shape}")
+            # print(f"x_curr shape before output, _ = model.predict_from_tensor(x_curr): {x_curr.shape}")
+            # print(f"y_curr shape before output, _ = model.predict_from_tensor(x_curr): {y_curr.shape}")
 
             if args.model.lower() == "geoclip":
                 output, _ = model.predict_from_tensor(x_curr)
             else: #CLIP
                 output = model(x_curr)
 
-            print(f"output shape: {output.shape}")
+            # print(f"output shape: {output.shape}")
 
             output = output.to(device=cpu_device)
             # y_curr = y_curr.to(device=device)
@@ -318,8 +315,6 @@ if __name__ == '__main__':
             qr_complete[ind_corrcl].float().mean(), torch.median(qr_complete[ind_corrcl].float()))
         adversary.logger.log(str_stats)
         
-
-        ################ not really relevant ##########################
 
         # save results depending on the threat model
         if args.norm in ['L0', 'patches', 'frames']:

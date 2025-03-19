@@ -1,6 +1,6 @@
 import os
 import cv2
-from skimage import transform
+# from skimage import transform
 import torch
 import numpy as np
 import time
@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import torchvision
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, SubsetRandomSampler
-from facenet_pytorch import MTCNN, InceptionResnetV1
+# from facenet_pytorch import MTCNN, InceptionResnetV1
 import argparse
 from attack.tiattack import miattack_face,crop_imgs,load_model
 
