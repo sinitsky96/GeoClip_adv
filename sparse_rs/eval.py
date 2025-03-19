@@ -237,7 +237,7 @@ if __name__ == '__main__':
                 output = model(adv.cuda())
 
             output = output.to(device=cpu_device)
-            y_curr = output.to(device=cpu_device)
+            y_curr = y_curr.to(device=cpu_device)
             # y_curr = y_curr.to(device=device)
 
             if args.model.lower() == "geoclip":
