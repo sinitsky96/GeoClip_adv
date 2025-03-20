@@ -289,11 +289,13 @@ class RSAttack():
 
                     
                 margin_min, loss_min = self.margin_and_loss(x_best, y)
+                # margin_min = margin_min.to(self.device)
+                # loss_min = loss_min.to(self.device)
                 n_queries = torch.ones(x.shape[0]).to(self.device)
                 
                 for it in range(1, self.n_queries):
                     # check points still to fool
-                    idx_to_fool = (margin_min > 0.).nonzero().squeeze()
+                    idx_to_fool = (margin_min > 0.).nonzero().squeeze().cpu()
                     x_curr = self.check_shape(x[idx_to_fool])
                     x_best_curr = self.check_shape(x_best[idx_to_fool])
                     y_curr = y[idx_to_fool]
@@ -336,7 +338,13 @@ class RSAttack():
                     
                     # update best solution
                     idx_improved = (loss < loss_min_curr).float()
-                    idx_to_update = (idx_improved > 0.).nonzero().squeeze()
+                    idx_to_update = (idx_improved > 0.).nonzero().squeeze().cpu()
+
+                    # print(f"loss_min.device: {loss_min.device}\n \
+                    #       idx_to_fool.device: {idx_to_fool.device}\n \
+                    #       loss_min.device: {idx_to_update.device}")
+
+
                     loss_min[idx_to_fool[idx_to_update]] = loss[idx_to_update]
         
                     idx_miscl = (margin < -1e-6).float()

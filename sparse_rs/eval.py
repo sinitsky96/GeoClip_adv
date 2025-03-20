@@ -6,7 +6,7 @@ import numpy as np
 
 from geoclip.model.GeoCLIP import GeoCLIP
 from data.Im2GPS3k.download import load_im2gps_data
-from sparse_rs.attack_geoclip import AttackGeoCLIP
+from sparse_rs.attack_sparse_rs import AttackGeoCLIP
 from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
 from transformers import CLIPProcessor, CLIPModel
 
@@ -52,7 +52,7 @@ if __name__ == '__main__':
 
     
     parser.add_argument('--targeted', action='store_true')
-    parser.add_argument('--target_class', type=int)
+    parser.add_argument('--target_class', type=eval)
 
     parser.add_argument('--model', default='geoclip', type=str)
     parser.add_argument('--dataset', type=str, default='Im2GPS3k') # Im2GPS3k, YFCC26k
@@ -63,6 +63,8 @@ if __name__ == '__main__':
 
     
     args = parser.parse_args()
+
+    # targeted: 37.090924,25.370521
 
     
     args.eps = args.k + 0
@@ -90,11 +92,10 @@ if __name__ == '__main__':
 
     if args.model.lower() == "geoclip":
         model = GeoCLIP()
-        model.to(device=args.device)
+        model.to(device)
         model.eval()
     elif args.model.lower() == "clip":
         model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
-        processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
         model.to(device)
         model.eval()
 
@@ -134,11 +135,18 @@ if __name__ == '__main__':
     
 
     if args.model.lower() == "geoclip":
-        from sparse_rs.attack_geoclip import AttackGeoCLIP
+        from sparse_rs.attack_sparse_rs import AttackGeoCLIP
         adversary = AttackGeoCLIP(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
             p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
             loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
             data_loader=data_loader, resample_loc=args.resample_loc,device=device)
+    elif args.model.lower() == "clip":
+        from sparse_rs.attack_sparse_rs import AttackCLIP
+        adversary = AttackCLIP(model, data_path=args.data_path, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
+            p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
+            loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
+            data_loader=data_loader, resample_loc=args.resample_loc,device=device)
+        model = adversary.get_logits
     else:
         from rs_attacks import RSAttack
         adversary = RSAttack(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
@@ -151,11 +159,15 @@ if __name__ == '__main__':
         if args.target_class is None:
             y_test = torch.ones_like(y_test) * torch.randint(1000, size=[1]).to(y_test.device)
         else:
+            target_tensor = torch.tensor(args.target_class, dtype=torch.float32)
             y_test = torch.ones_like(y_test) * args.target_class
         print('target labels', y_test)
     
     elif args.targeted: # TODO: adjust to lon lat.
-        y_test = random_target_classes(y_test, 1000)
+        if args.target_class is None:
+            raise ValueError(f'Expected a --target_class tuple argumanet. for example: --target_class "(37.090924,25.370521)"')
+        target_tensor = torch.tensor(args.target_class, dtype=torch.float32)
+        y_test = target_tensor.repeat(y_test.shape[0],1)
         print('target labels', y_test)
     
     # bs = min(args.bs, 500)
@@ -165,6 +177,8 @@ if __name__ == '__main__':
     adv_complete = x_test.clone()
     qr_complete = torch.zeros([x_test.shape[0]]).cpu()
     pred = torch.zeros([0]).float().cpu()
+    print("starting clean classification")
+    
     with torch.no_grad():
         # find points originally correctly classified
         for batch_idx in range(n_batches):
@@ -199,15 +213,21 @@ if __name__ == '__main__':
                     pred = torch.cat((pred, (output.max(1)[1] == y_curr).float().cpu()), dim=0)
                 else:
                     pred = torch.cat((pred, (output.max(1)[1] != y_curr).float().cpu()), dim=0)
+
+            del x_curr
+            del y_curr
+            del output
+            torch.cuda.empty_cache()
         
         adversary.logger.log('clean accuracy {:.2%}'.format(pred.mean()))
+        print("finished clean classification")
         
         # n_batches = pred.sum() // bs + 1 if pred.sum() % bs != 0 else pred.sum() // bs
         # n_batches = n_batches.long().item()
 
         n_batches = int(np.ceil(pred.sum() / bs))
 
-        if args.model.lower() == "geoclip": # TODO: can be changed to try and fool even more every point.
+        if args.model.lower() == "geoclip": # can be changed to try and fool even more every point.
             ind_to_fool = (pred == 1).nonzero(as_tuple=True)[0]
         else:
             ind_to_fool = (pred == 1).nonzero().squeeze()
@@ -217,8 +237,6 @@ if __name__ == '__main__':
         # run the attack
         pred_adv = pred.clone()
         for batch_idx in range(n_batches):
-            torch.cuda.empty_cache()
-
             start_idx = batch_idx * bs
             end_idx = min((batch_idx + 1) * bs, n_examples)
 
@@ -229,12 +247,13 @@ if __name__ == '__main__':
             # print(f"x_curr device: {x_curr.device}, y_curr device: {y_curr.device}")
 
             qr_curr, adv = adversary.perturb(x_curr, y_curr)
+            adv = adv.to(device)
             
             # output = model(adv.cuda())
             if args.model.lower() == "geoclip":
-                output, _ = model.predict_from_tensor(adv.cuda())
+                output, _ = model.predict_from_tensor(adv)
             else: #CLIP
-                output = model(adv.cuda())
+                output = model(adv)
 
             output = output.to(device=cpu_device)
             y_curr = y_curr.to(device=cpu_device)
@@ -258,6 +277,13 @@ if __name__ == '__main__':
             
             print('batch {}/{} - {:.0f} of {} successfully perturbed'.format(
                 batch_idx + 1, n_batches, x_curr.shape[0] - acc_curr.sum(), x_curr.shape[0]))
+            
+            del x_curr
+            del y_curr
+            del adv
+            del qr_curr
+            del acc_curr
+            torch.cuda.empty_cache()
             
         adversary.logger.log('robust accuracy {:.2%}'.format(pred_adv.float().mean()))
         

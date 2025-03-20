@@ -119,6 +119,21 @@ class GeoCLIP(nn.Module):
     
 
     @torch.no_grad()
+    def predict_logits(self, image_tensor):
+        # Ensure proper dimensions (add batch dimension if needed)
+        if len(image_tensor.shape) == 3:
+            image_tensor = image_tensor.unsqueeze(0)
+            
+        # Move to the correct device
+        image_tensor = image_tensor.to(self.device)
+        
+        gps_gallery = self.gps_gallery.to(self.device)
+        
+        logits_per_image = self.forward(image_tensor, gps_gallery)
+        return logits_per_image
+    
+
+    @torch.no_grad()
     def predict_from_tensor(self, image_tensor, top_k=1, apply_transforms=False):
         """Given an image tensor, predict the top k GPS coordinates
         
