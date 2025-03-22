@@ -220,7 +220,7 @@ if __name__ == '__main__':
             torch.cuda.empty_cache()
         
         adversary.logger.log('clean accuracy {:.2%}'.format(pred.mean()))
-        print("finished clean classification")
+        # print("finished clean classification")
         
         # n_batches = pred.sum() // bs + 1 if pred.sum() % bs != 0 else pred.sum() // bs
         # n_batches = n_batches.long().item()
@@ -237,7 +237,7 @@ if __name__ == '__main__':
         # run the attack
         pred_adv = pred.clone()
         for batch_idx in range(n_batches):
-            print(f"starting batch: {batch_idx+1}")
+            # print(f"starting batch: {batch_idx+1}")
             start_idx = batch_idx * bs
             end_idx = min((batch_idx + 1) * bs, n_examples)
 
@@ -247,16 +247,16 @@ if __name__ == '__main__':
             # print(f"x_curr shape before qr_curr, adv = adversary.perturb(x_curr, y_curr): {x_curr.shape}")
             # print(f"x_curr device: {x_curr.device}, y_curr device: {y_curr.device}")
 
-            print("starting pertub")
+            # print("starting pertub")
             qr_curr, adv = adversary.perturb(x_curr, y_curr)
-            print("finished pertub")
+            # print("finished pertub")
             adv = adv.to(device)
             
             # output = model(adv.cuda())
             if args.model.lower() == "geoclip":
-                print("starting predict_from_tensor")
+                # print("starting predict_from_tensor")
                 output, _ = model.predict_from_tensor(adv)
-                print("finished predict_from_tensor")
+                # print("finished predict_from_tensor")
             else: #CLIP
                 output = model(adv)
 

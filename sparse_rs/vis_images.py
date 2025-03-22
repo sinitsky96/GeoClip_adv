@@ -20,7 +20,7 @@ parser.add_argument('--path_data', type=str)
 args = parser.parse_args()
 
 if args.path_data is None:
-    path_data = './results/sparse_rs_patches/sparse_rs_patches_geoclip_1_200_nqueries_1000_pinit_0.30_loss_margin_eps_20_targeted_False_targetclass_None_seed_42.pth'
+    path_data = './results/sparse_rs_L0/sparse_rs_L0_geoclip_1_200_nqueries_1000_pinit_0.30_loss_margin_eps_64_targeted_False_targetclass_None_seed_42.pth'
 else:
     path_data = args.path_data
 
@@ -31,7 +31,7 @@ else:
     imgs, qr = data['adv'].cpu(), torch.arange(1, data['adv'].shape[0])
 
 nqueries = 100000
-ind = ((qr > 0) * (qr < nqueries)).nonzero().squeeze()
+ind = ((qr > 1) * (qr < nqueries)).nonzero().squeeze()
 imgs_inv = torch.stack([unnormalize(img) for img in imgs])
 # imgs_to_show = imgs[ind].permute(0, 2, 3, 1).cpu().numpy()
 imgs_to_show = imgs_inv[ind].permute(0, 2, 3, 1).cpu().numpy()  # shape: (N, H, W, C)
