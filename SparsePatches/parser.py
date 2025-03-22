@@ -7,16 +7,9 @@ from torchvision.utils import save_image
 from robustbench.data import load_cifar10, load_cifar100, load_imagenet
 from robustbench.utils import load_model
 import torchvision.transforms as transforms
-from models.cifar10.resnet import ResNet18
-from models.imagenet.inception_v3 import inception_v3
+
 
 from attacks.pgd_attacks import PGDTrim, PGDTrimKernel
-from attacks.SIA.cornersearch_attacks import CSattack
-from attacks.SIA.pgd_sl0_attacks import PGDL0attack as PGDL0
-from attacks.SF.attack import SF
-from attacks.gf_attacks.GFattack import GFattack
-from attacks.TSAA.attack import TSAA
-from attacks.SAHomotopy.attack import Homotopy
 
 
 def parse_args():
@@ -42,14 +35,12 @@ def parse_args():
     parser.add_argument('--l0_hist_limits', type=int, nargs='+',
                         default=[0, 1, 2, 4, 8, 16, 32, 64, 128, 224, 256, 299, 512, 1024],
                         help='Limits of L0 values for processing the L0 histogram of the resulting perturbations')
-    # [1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1]
     # model args
     parser.add_argument('--model_name', type=str, default='', help='model name to load from robustness (default: use pretrained ResNet18 model)')
     parser.add_argument('--model_transform_input', action='store_true', help='apply model specific data transformation')
 
-    # attack args
-    # pgd attacks args
-    parser.add_argument('--attack', type=str, default='PGDTrim', help='PGDTrim, CS, PGD_L0, SF, GF, TSAA, Homotopy')
+    # attack args - simplified to only include PGDTrim
+    parser.add_argument('--attack', type=str, default='PGDTrim', help='Only PGDTrim is supported')
     parser.add_argument('--eps_l_inf_from_255', type=int, default=255)
     parser.add_argument('--sparsity', type=int, default=1, help='number of pixels in sparse pgd_attacks')
     parser.add_argument('--n_iter', type=int, default=100)
@@ -1322,8 +1313,7 @@ def compute_attack_args(args):
             if args.att_kernel_min_active:
                 args.attack_kernel_str += "_count_min_active"
             
-    attack_dict = {'PGDTrim': PGDTrim, 'CS': CSattack, 'PGD_L0': PGDL0, 'SF': SF,
-                   'GF': GFattack, 'TSAA': TSAA, 'Homotopy': Homotopy}
+    attack_dict = {'PGDTrim': PGDTrim}
     args.attack_name = args.attack
     if args.attack in attack_dict:
         args.attack = attack_dict[args.attack]
@@ -1332,29 +1322,8 @@ def compute_attack_args(args):
         args.attack = PGDTrim
     print("Testing models under " + args.attack_name + " attack")
 
-    if args.attack_name == 'CS':
-        args.attack_args = {'n_classes': args.n_classes,
-                            'batch_size': args.batch_size,
-                            'data_shape': args.data_shape,
-                            'type_attack': args.type_attack,
-                            'n_iter': args.n_iter,
-                            'n_max': args.n_max,
-                            'kappa': -1,
-                            'epsilon': args.l0_attacks_eps,
-                            'sparsity': args.sparsity,
-                            'size_incr': args.size_incr,
-                            'verbose': args.attack_verbose}
-        args.attack_obj = args.attack(args.model, args.attack_args)
-        args.attack_dpo_str = ""
-        args.attack_trim_str = ""
-        args.att_mask_dist_str = ""
-        args.attack_kernel_str = ""
-        args.attack_obj_str = "eps_from_255_" + str(args.eps_l_inf_from_255) + \
-                              "_sparsity_" + str(args.sparsity) + \
-                              "_iter_" + str(args.n_iter) + \
-                              "_n_max_" + str(args.n_max) + \
-                              "_size_incr_" + str(args.size_incr)
-    elif args.attack_name == 'PGD_L0':
+
+    if args.attack_name == 'PGD_L0':
         args.attack_args = {'batch_size': args.batch_size,
                             'data_shape': args.data_shape,
                             'type_attack': args.type_attack,
@@ -1375,93 +1344,7 @@ def compute_attack_args(args):
                               "_iter_" + str(args.n_iter) + \
                               "_alpha_" + str(args.step_size).replace('.', '_') + \
                               "_restarts_" + str(args.n_restarts)
-    elif args.attack_name == 'SF':
-        args.batch_size = 1
-        args.att_misc_args = {'device': args.device,
-                              'batch_size': args.batch_size,
-                              'data_shape': args.data_shape,
-                              'verbose': args.attack_verbose}
-
-        args.attack_args = {'eps': args.eps_l_inf,
-                            'eps_from_255': args.eps_l_inf_from_255,
-                            'n_iter': args.n_iter,
-                            'lambda_factor': args.lambda_factor}
-
-
-        args.attack_obj = args.attack(args.model, args.att_misc_args, args.attack_args)
-        args.attack_dpo_str = ""
-        args.attack_trim_str = ""
-        args.att_mask_dist_str = ""
-        args.attack_kernel_str = ""
-        args.attack_obj_str = "norm_Linf_eps_from_255_" + str(args.eps_l_inf_from_255) + \
-                              "_iter_" + str(args.n_iter) + \
-                              "_n_reduce_iter_" + str(args.n_reduce_iter)
-    elif args.attack_name == 'GF':
-        args.batch_size = 1
-        args.att_misc_args = {'device': args.device,
-                              'batch_size': args.batch_size,
-                              'data_shape': args.data_shape,
-                              'verbose': args.attack_verbose}
-
-        args.attack_args = {'eps': args.eps_l_inf,
-                            'eps_from_255': args.eps_l_inf_from_255,
-                            'n_iter': args.n_iter,
-                            'n_reduce_iter': args.n_reduce_iter,
-                            'gen_distort': args.gen_distort}
-
-
-        args.attack_obj = args.attack(args.model, args.att_misc_args, args.attack_args)
-        args.attack_dpo_str = ""
-        args.attack_trim_str = ""
-        args.att_mask_dist_str = ""
-        args.attack_kernel_str = ""
-        args.attack_obj_str = "norm_Linf_eps_from_255_" + str(args.eps_l_inf_from_255) + \
-                              "_iter_" + str(args.n_iter) + \
-                              "_n_reduce_iter_" + str(args.n_reduce_iter)
-    elif args.attack_name == 'TSAA':
-        args.att_misc_args = {'device': args.device,
-                              'batch_size': args.batch_size,
-                              'data_shape': args.data_shape,
-                              'verbose': args.attack_verbose}
-
-        args.attack_args = {'eps': args.eps_l_inf,
-                            'eps_from_255': args.eps_l_inf_from_255,
-                            'is_inception_model': args.is_inception_model}
-
-
-        args.attack_obj = args.attack(args.model, args.att_misc_args, args.attack_args)
-        args.attack_dpo_str = ""
-        args.attack_trim_str = ""
-        args.att_mask_dist_str = ""
-        args.attack_kernel_str = ""
-        args.attack_obj_str = "norm_Linf_eps_from_255_" + str(args.eps_l_inf_from_255)
     
-    elif args.attack_name == 'Homotopy':
-        args.batch_size = 1
-        args.att_misc_args = {'device': args.device,
-                              'batch_size': args.batch_size,
-                              'data_shape': args.data_shape,
-                              'verbose': args.attack_verbose}
-
-        args.attack_args = {'eps': args.eps_l_inf,
-                            'eps_from_255': args.eps_l_inf_from_255,
-                            'n_iter': args.n_iter,
-                            'dec_factor': args.dec_factor,
-                            'val_c': args.val_c,
-                            'val_w1': args.val_w1,
-                            'val_w2': args.val_w2,
-                            'val_gamma': args.val_gamma,
-                            'max_update': args.max_update}
-
-
-        args.attack_obj = args.attack(args.model, args.att_misc_args, args.attack_args)
-        args.attack_dpo_str = ""
-        args.attack_trim_str = ""
-        args.att_mask_dist_str = ""
-        args.attack_kernel_str = ""
-        args.attack_obj_str = "norm_Linf_eps_from_255_" + str(args.eps_l_inf_from_255) + \
-                              "_iter_" + str(args.n_iter) + \
-                              "_n_reduce_iter_" + str(args.n_reduce_iter)
 
     else:
         
