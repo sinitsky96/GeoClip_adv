@@ -128,6 +128,8 @@ class GeoCLIP(nn.Module):
         image_tensor = image_tensor.to(self.device)
         
         gps_gallery = self.gps_gallery.to(self.device)
+        # print(f"gps_gallery {gps_gallery.device}")
+        # print(f"self {self.device}")
         
         logits_per_image = self.forward(image_tensor, gps_gallery)
         return logits_per_image

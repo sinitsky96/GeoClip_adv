@@ -109,8 +109,8 @@ if __name__ == '__main__':
     if not os.path.exists(logsdir):
         os.makedirs(logsdir)
     
-    if args.targeted or 'universal' in args.norm:
-        args.loss = 'ce'
+    # if args.targeted or 'universal' in args.norm:
+    #     args.loss = 'ce'
     # data_loader = testiter if 'universal' in args.norm else None
 
     data_loader = None # The code uses this in universial attacks, we dont need this.
@@ -139,7 +139,7 @@ if __name__ == '__main__':
         adversary = AttackGeoCLIP(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
             p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
             loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
-            data_loader=data_loader, resample_loc=args.resample_loc,device=device)
+            data_loader=data_loader, resample_loc=args.resample_loc,device=device, geoclip_attack=True)
     elif args.model.lower() == "clip":
         from sparse_rs.attack_sparse_rs import AttackCLIP
         adversary = AttackCLIP(model, data_path=args.data_path, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
@@ -237,6 +237,7 @@ if __name__ == '__main__':
         # run the attack
         pred_adv = pred.clone()
         for batch_idx in range(n_batches):
+            print(f"starting batch: {batch_idx+1}")
             start_idx = batch_idx * bs
             end_idx = min((batch_idx + 1) * bs, n_examples)
 
@@ -246,12 +247,16 @@ if __name__ == '__main__':
             # print(f"x_curr shape before qr_curr, adv = adversary.perturb(x_curr, y_curr): {x_curr.shape}")
             # print(f"x_curr device: {x_curr.device}, y_curr device: {y_curr.device}")
 
+            print("starting pertub")
             qr_curr, adv = adversary.perturb(x_curr, y_curr)
+            print("finished pertub")
             adv = adv.to(device)
             
             # output = model(adv.cuda())
             if args.model.lower() == "geoclip":
+                print("starting predict_from_tensor")
                 output, _ = model.predict_from_tensor(adv)
+                print("finished predict_from_tensor")
             else: #CLIP
                 output = model(adv)
 
