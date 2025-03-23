@@ -181,14 +181,14 @@ class GeoCLIP(nn.Module):
                     
                 image_tensor = torch.stack(transformed_tensors)
             
-            gps_gallery = self.gps_gallery.to(self.device)
+            gps_gallery = self.gps_gallery.to(self.device)     
             
             logits_per_image = self.forward(image_tensor, gps_gallery)
-            probs_per_image = logits_per_image.softmax(dim=-1).cpu()
+            probs_per_image = logits_per_image.softmax(dim=-1)
             
             # Get top k predictions
             top_pred = torch.topk(probs_per_image, top_k, dim=1)
-            top_pred_gps = self.gps_gallery[top_pred.indices]
+            top_pred_gps = gps_gallery[top_pred.indices]
             top_pred_prob = top_pred.values
 
             # print(f"top_pred_gps shape: {top_pred_gps.shape}")

@@ -961,7 +961,7 @@ class RSAttack():
                             targeted attack -> target labels, if None random classes,
                             different from the predicted ones, are sampled
         """
-
+        # print(f"start pertub: {y}")
         self.init_hyperparam(x)
 
         adv = x.clone()
@@ -979,7 +979,12 @@ class RSAttack():
                     y_pred = output.max(1)[1]
                     y = self.random_target_classes(y_pred, n_classes)
         else:
-            y = y.detach().clone().long().to(self.device)
+            if self.geoclip_attack:
+                y = y.detach().clone().to(self.device)
+            else:
+                y = y.detach().clone().long().to(self.device)
+
+        # print(f"y before if self.geoclip_attack: # distance: {y}")
 
         if self.geoclip_attack: # distance
             # print(f"x.shape: {x.shape}")
@@ -1011,9 +1016,12 @@ class RSAttack():
 
                 # print(f"x_to_fool, y_to_fool device before qr_curr, adv_curr = self.attack_single_run(x_to_fool, y_to_fool): {x_to_fool.device}, {y_to_fool.device}")
 
-                # print("starting attack_single_run")
+                # print(f"starting attack_single_run, y_to_fool: {y_to_fool}")
                 qr_curr, adv_curr = self.attack_single_run(x_to_fool, y_to_fool)
                 # print("finished attack_single_run")
+
+                # adv[ind_to_fool] = adv_curr.clone()
+                # qr[ind_to_fool] = qr_curr.clone()
 
                 output_curr = self.predict(adv_curr)
                 if self.geoclip_attack: # distance
@@ -1031,8 +1039,10 @@ class RSAttack():
                 ind_curr = (acc_curr == 0).nonzero().squeeze()
 
                 acc[ind_to_fool[ind_curr]] = 0 #indecies in acc that were fooled are set to 0
+                
                 adv[ind_to_fool[ind_curr]] = adv_curr[ind_curr].clone()
                 qr[ind_to_fool[ind_curr]] = qr_curr[ind_curr].clone()
+                
                 if self.verbose:
                     print('restart {} - robust accuracy: {:.2%}'.format(
                         counter, acc.float().mean()),

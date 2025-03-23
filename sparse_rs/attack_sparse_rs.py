@@ -33,9 +33,16 @@ class AttackGeoCLIP(RSAttack): # TODO: add an abstract attack class to all the a
     so that if the closest of the top-k predictions is farther than 2500 km, the margin becomes negative 
     (indicating total success), whereas if any prediction is closer than 1 km, the loss is high.
     """
-    def __init__(self, model, **kwargs):
+    def __init__(self, model, y_test, **kwargs):
         self.model = model
         super().__init__(self.predict, **kwargs)
+        gps_gallery = self.model.gps_gallery.to(self.device)
+        self.label_indices = coords_to_class_indices_nn(gps_gallery, y_test).long().to(self.device)
+        self.label_dict = {}
+        for i in range(y_test.shape[0]):
+            # Convert coordinate tensor to tuple (e.g., (lat, lon))
+            coord_tuple = tuple(y_test[i].tolist())
+            self.label_dict[coord_tuple] = self.label_indices[i]
 
     def predict(self, x):
         output, _ = self.model.predict_from_tensor(x)
@@ -52,6 +59,7 @@ class AttackGeoCLIP(RSAttack): # TODO: add an abstract attack class to all the a
         """
         # print("in margin loss")
         # print(f"gallery device: {self.model.gps_gallery.device}")
+        # print(y)
         logits = self.model.predict_logits(x)
         probs_per_image = logits.softmax(dim=-1)
         top_pred = torch.topk(probs_per_image, 1, dim=1) # for gallery query
@@ -62,29 +70,27 @@ class AttackGeoCLIP(RSAttack): # TODO: add an abstract attack class to all the a
         predicted_gps = top_pred_gps.squeeze(1) # removes the singleton top_k (we use k=1) dimension: [100, 1, 2] -> [100, 2]
 
         distance = haversine_distance(predicted_gps, y)  # shape: (B,)
+        # print(y)
 
         if not self.targeted:
-            # print("untargeted margin")
             margin = torch.sub(CONTINENT_R, distance)
             if self.loss == 'ce':
-                print(f"gallery device: {gps_gallery.device}")
-                label_indices = coords_to_class_indices_nn(gps_gallery, y).long()
-                print(f"logits device: {logits.device}")
-                print(f"label_indices device: {label_indices.device}")
+                label_indices = torch.LongTensor(
+                    [self.label_dict[tuple(coord.tolist())] for coord in y]
+                ).to(self.device)
                 xent = F.cross_entropy(logits, label_indices, reduction='none')
                 loss = -1.0 * xent
             elif self.loss == 'margin':
-                # print("untargeted margin")
                 loss = - margin
         else:
-            # print("targeted margin")
             margin = torch.sub(distance, STREET_R)
             if self.loss == 'ce':
-                label_indices = coords_to_class_indices_nn(gps_gallery, y).long()
+                label_indices = torch.LongTensor(
+                    [self.label_dict[tuple(coord.tolist())] for coord in y]
+                ).to(self.device)
                 xent = F.cross_entropy(logits, label_indices, reduction='none')
                 loss = xent
             elif self.loss == 'margin':
-                # print("targeted margin")
                 loss = margin
         
         return margin, loss
