@@ -2,6 +2,8 @@ import numpy as np
 import math
 import itertools
 import torch
+import torch.nn.functional as F
+from tqdm import tqdm
 from attacks.pgd_attacks.attack import Attack
 
 
@@ -590,48 +592,84 @@ class PGDTrim(Attack):
                                 mask_sample_method, mask_prep_data, n_trim_pixels_tensor, n_mask_samples)
 
     def pgd(self, x, y, mask, dense_pert, best_sparse_pert, best_loss, best_succ, dpo_mean, dpo_std, n_iter=None):
+        if n_iter is None:
+            n_iter = self.n_iter
+
         with torch.no_grad():
-            report_info = self.report_info
-            if n_iter is None:
-                n_iter = self.n_iter
-            else:
-                report_info = False
-            sparse_pert = self.apply_mask_method(mask, dense_pert)
-            loss, succ = self.eval_pert(x, y, sparse_pert)
-            self.update_best(best_loss, loss,
-                             [best_sparse_pert, best_succ],
-                             [sparse_pert, succ])
-            
-            if report_info:
+            best_sparse_pert = best_sparse_pert.clone().detach()
+            best_loss = best_loss.clone().detach()
+            best_succ = best_succ.clone().detach()
+            dense_pert = dense_pert.clone().detach().requires_grad_(True)
+
+            if self.report_info:
                 all_best_succ = torch.zeros(n_iter + 1, self.batch_size, dtype=torch.bool, device=self.device)
                 all_best_loss = torch.zeros(n_iter + 1, self.batch_size, dtype=self.dtype, device=self.device)
                 all_best_succ[0] = best_succ
                 all_best_loss[0] = best_loss
 
-        self.set_dpo(dpo_mean, dpo_std)
-        self.model.eval()
-        with torch.enable_grad():
-            pert = dense_pert.clone().detach()
-            for k in range(1, n_iter + 1):
-                pert.requires_grad_()
-                mask.requires_grad_(False)
-                sparse_pert = self.apply_mask_method(mask, pert)
-                train_loss = self.criterion(self.model.forward(x + self.dpo(sparse_pert)), y)
-                grad = torch.autograd.grad(train_loss.mean(), [pert])[0].detach()
-    
-                with torch.no_grad():
-                    pert = self.step(pert, grad)
-                    sparse_pert = self.apply_mask_method(mask, pert)
-                    eval_loss, succ = self.eval_pert(x, y, sparse_pert)
-                    self.update_best(best_loss, eval_loss,
-                                     [dense_pert, best_sparse_pert, best_succ],
-                                     [pert, sparse_pert, succ])
-                    
-                    if report_info:
-                        all_best_succ[k] = best_succ | all_best_succ[k - 1]
-                        all_best_loss[k] = best_loss
+        # Create PGD iteration progress bar if verbose
+        pgd_pbar = None
+        if self.verbose and n_iter > 1:
+            pgd_pbar = tqdm(range(n_iter), desc="PGD iterations", leave=False)
 
-        if report_info:
+        for k in (pgd_pbar if pgd_pbar is not None else range(n_iter)):
+            if dense_pert.grad is not None:
+                dense_pert.grad.data.zero_()
+
+            adv_x = x + dense_pert
+            loss_ind = self.criterion(adv_x, y)
+            loss = loss_ind.sum()
+            loss.backward()
+
+            with torch.no_grad():
+                sparse_pert = self.apply_mask(mask, dense_pert)
+                loss_ind_sparse, succ_ind_sparse = self.eval_pert(x, y, pert=sparse_pert)
+
+                mask_idxs = (loss_ind_sparse > best_loss)
+                if mask_idxs.any():
+                    best_loss[mask_idxs] = loss_ind_sparse[mask_idxs]
+                    best_sparse_pert[mask_idxs] = sparse_pert[mask_idxs]
+                    best_succ = best_succ | succ_ind_sparse
+                
+                # Update progress bar if used
+                if pgd_pbar is not None:
+                    pgd_pbar.set_postfix({
+                        "loss": f"{loss_ind.mean().item():.4f}",
+                        "success": f"{best_succ.float().mean().item():.2%}"
+                    })
+
+                if self.report_info:
+                    all_best_succ[k] = best_succ | all_best_succ[k - 1]
+                    all_best_loss[k] = best_loss
+
+            # Dense grad update step
+            with torch.no_grad():
+                if self.dropout_dist == 'gaussian':
+                    grad_dpo = torch.randn_like(dense_pert.grad.data)
+                    if self.dropout_std_bernoulli:
+                        dpo_mask = torch.bernoulli(torch.ones_like(dense_pert.grad.data) * 0.2)
+                        grad_dpo = grad_dpo * dpo_mask
+                    dense_pert.grad.data += grad_dpo * dpo_std
+
+                grad_step_size = self.alpha * (
+                        self.w_iter_ratio * ((k + 1) / self.n_iter) + (1 - self.w_iter_ratio))
+                grad_sign = dense_pert.grad.data.sign()
+                dense_pert.data = dense_pert.data - grad_step_size * grad_sign
+
+                # Project to L-inf norm
+                if self.eps > 0.0:
+                    dense_pert.data = torch.clamp(dense_pert.data, -self.eps, self.eps)
+
+                # Project to valid perturbation domain
+                x_pert = x + dense_pert
+                adv_delta = torch.clamp(x_pert, 0.0, 1.0) - x
+                dense_pert.data = adv_delta
+
+        # Close PGD progress bar if used
+        if pgd_pbar is not None:
+            pgd_pbar.close()
+
+        if self.report_info:
             return all_best_succ, all_best_loss
         return None, None
 
@@ -652,6 +690,11 @@ class PGDTrim(Attack):
                 all_best_succ = torch.zeros(self.n_l0_norms, self.n_restarts, self.n_iter + 1, self.batch_size, dtype=torch.bool, device=self.device)
                 all_best_loss = torch.zeros(self.n_l0_norms, self.n_restarts, self.n_iter + 1, self.batch_size, dtype=self.dtype, device=self.device)
 
+        # Create restart progress bar
+        restart_pbar = None
+        if self.verbose:
+            restart_pbar = tqdm(range(self.n_restarts), desc="Attack restarts", leave=True)
+
         for rest in range(self.n_restarts):
             with torch.no_grad():
                 mask = self.mask_ones_flat.clone().detach().view(self.mask_shape)
@@ -664,8 +707,15 @@ class PGDTrim(Attack):
                     dense_pert = self.random_initialization()
                 else:
                     dense_pert = torch.zeros_like(x)
+            
+            # Create trim steps progress bar
+            trim_pbar = None
+            if self.verbose:
+                trim_pbar = tqdm(enumerate(trim_steps), total=len(trim_steps), 
+                                desc=f"Sparsity steps (restart {rest+1}/{self.n_restarts})", 
+                                leave=False)
 
-            for trim_idx, n_trim_pixels in enumerate(trim_steps):
+            for trim_idx, n_trim_pixels in (trim_pbar if trim_pbar is not None else enumerate(trim_steps)):
                 with torch.no_grad():
                     l0_idx = l0_indices[trim_idx]
                     trim_l0_idx = l0_indices[trim_idx + 1]
@@ -683,6 +733,9 @@ class PGDTrim(Attack):
                     n_mask_samples = steps_n_mask_samples[trim_idx]
                     mask_trim = steps_mask_trim[trim_idx]
                     
+                    if trim_pbar is not None:
+                        trim_pbar.set_postfix({"sparsity": f"{n_trim_pixels}", "pixels": f"{n_trim_pixels:,}"})
+                    
                 no_trim_all_best_succ, no_trim_all_best_loss\
                     = self.pgd(x, y, mask, dense_pert, best_sparse_pert, best_loss, best_succ, dpo_mean, dpo_std)
                     
@@ -692,25 +745,35 @@ class PGDTrim(Attack):
                         all_best_loss[l0_idx, rest] = no_trim_all_best_loss
                     if self.verbose:
                         pert_l0 = best_sparse_pert.abs().view(self.batch_size, self.data_channels, -1).sum(dim=1).count_nonzero(1)
-                        print("Finished optimizing sparse perturbation on predetermined pixels")
-                        print('max L0 in perturbation: ' + str(pert_l0.max().item()))
                         pert_l_inf = (best_sparse_pert.abs() / self.data_RGB_size).view(self.batch_size, -1).max(1)[0]
-                        print('max L_inf in perturbation: {:.5f}, nan in tensor: {}, max: {:.5f}, min: {:.5f}'.format(
-                            pert_l_inf.max(), (best_sparse_pert != best_sparse_pert).sum(), best_sparse_pert.max(), best_sparse_pert.min()))
+                        if trim_pbar is not None:
+                            trim_pbar.set_postfix({"sparsity": f"{n_trim_pixels}", 
+                                                 "L0": f"{pert_l0.max().item():.0f}", 
+                                                 "L∞": f"{pert_l_inf.max():.5f}"})
                     
                     mask = self.trim_pert_pixels(x, y, mask, dense_pert, best_sparse_pert,
                                                  best_pixels_crit, best_pixels_mask, best_pixels_loss,
                                                  mask_prep, mask_sample, mask_trim,
                                                  n_trim_pixels, trim_ratio, n_mask_samples)
             
+            # Close trim progress bar if used
+            if trim_pbar is not None:
+                trim_pbar.close()
+            
             with torch.no_grad():
                 l0_idx = l0_indices[-1]
                 best_sparse_pert = best_l0_perts[l0_idx]
                 best_loss = best_l0_loss[l0_idx]
                 best_succ = best_l0_succ[l0_idx]
+            
+            # Final optimization without pixel trimming
+            if self.verbose:
+                print("Final optimization without pixel trimming...")
+                
             no_trim_all_best_succ, no_trim_all_best_loss \
                 = self.pgd(x, y, mask, dense_pert, best_sparse_pert, best_loss, best_succ,
                            self.post_trim_dpo_mean, self.post_trim_dpo_std)
+            
             with torch.no_grad():
                 if self.report_info:
                     all_best_succ[l0_idx, rest] = no_trim_all_best_succ
@@ -721,12 +784,17 @@ class PGDTrim(Attack):
 
                 if self.verbose:
                     pert_l0 = best_sparse_pert.abs().view(self.batch_size, self.data_channels, -1).sum(dim=1).count_nonzero(1)
-                    print("Finished optimizing perturbation without pixel trimming")
-                    print('max L0 in perturbation: ' + str(pert_l0.max().item()))
                     pert_l_inf = (best_sparse_pert.abs() / self.data_RGB_size).view(self.batch_size, -1).max(1)[0]
-                    print('max L_inf in perturbation: {:.5f}, nan in tensor: {}, max: {:.5f}, min: {:.5f}'.format(
-                        pert_l_inf.max(), (best_sparse_pert != best_sparse_pert).sum(), best_sparse_pert.max(),
-                        best_sparse_pert.min()))
+                    if restart_pbar is not None:
+                        restart_pbar.set_postfix({
+                            "L0": f"{pert_l0.max().item():.0f}", 
+                            "L∞": f"{pert_l_inf.max():.5f}"
+                        })
+                        restart_pbar.update(1)
+
+        # Close restart progress bar if used
+        if restart_pbar is not None:
+            restart_pbar.close()
 
         if self.report_info:
             return best_l0_perts, all_best_succ, all_best_loss
