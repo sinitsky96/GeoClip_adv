@@ -21,22 +21,34 @@ export PYTHONPATH=$PYTHONPATH:/home/daniellebed/project/GeoClip_adv
 # python ./sparse_rs/eval.py --loss ce --model geoclip --norm patches --bs 32 --n_queries 100 --k 5 --device cuda
 
 
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 1000 --k 1 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 1000 --k 2 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 1000 --k 4 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 1000 --k 8 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 1000 --k 16 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 1000 --k 32 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 1000 --k 64 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 1000 --k 128 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 1000 --k 256 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 1000 --k 1 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 2 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 4 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 8 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 16 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 32 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 64 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 128 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 224 --device cuda
 
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 1 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 2 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 4 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 8 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 16 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 32 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 64 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 128 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 32 --n_queries 1000 --k 224 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model clip --norm L0 --bs 32 --n_queries 10 --k 1000 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model clip --norm patches --bs 32 --n_queries 1000 --k 2 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model clip --norm patches --bs 32 --n_queries 1000 --k 4 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model clip --norm patches --bs 32 --n_queries 1000 --k 8 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model clip --norm patches --bs 32 --n_queries 1000 --k 16 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model clip --norm patches --bs 32 --n_queries 1000 --k 32 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model clip --norm patches --bs 32 --n_queries 1000 --k 64 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model clip --norm patches --bs 32 --n_queries 1000 --k 128 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model clip --norm patches --bs 32 --n_queries 1000 --k 224 --device cuda
+
+
+python ./sparse_rs/eval.py --loss margin --model clip --norm L0 --bs 32 --n_queries 100 --k 400 --device cuda
+# python ./sparse_rs/eval.py --loss ce --model clip --norm patches --bs 32 --n_queries 1000 --k 2 --device cuda
+# python ./sparse_rs/eval.py --loss ce --model clip --norm patches --bs 32 --n_queries 1000 --k 4 --device cuda
+# python ./sparse_rs/eval.py --loss ce --model clip --norm patches --bs 32 --n_queries 1000 --k 8 --device cuda
+# python ./sparse_rs/eval.py --loss ce --model clip --norm patches --bs 32 --n_queries 1000 --k 16 --device cuda
+# python ./sparse_rs/eval.py --loss ce --model clip --norm patches --bs 32 --n_queries 1000 --k 32 --device cuda
+# python ./sparse_rs/eval.py --loss ce --model clip --norm patches --bs 32 --n_queries 1000 --k 64 --device cuda
+# python ./sparse_rs/eval.py --loss ce --model clip --norm patches --bs 32 --n_queries 1000 --k 128 --device cuda
+# python ./sparse_rs/eval.py --loss ce --model clip --norm patches --bs 32 --n_queries 1000 --k 224 --device cuda
+

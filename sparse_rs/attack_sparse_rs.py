@@ -1,7 +1,7 @@
 import torch
 from rs_attacks import RSAttack
 from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
-from transformers import CLIPProcessor
+from transformers import CLIPProcessor, CLIPFeatureExtractor, CLIPTokenizer
 import torch.nn.functional as F
 import os
 from data.Im2GPS3k.download import load_places365_categories
@@ -89,57 +89,66 @@ class AttackGeoCLIP(RSAttack): # TODO: add an abstract attack class to all the a
         
         return margin, loss
     
-class AttackCLIP(RSAttack):
-    r"""
-    The following is from the CLIP model:
-        Returns:
 
-        Examples:
+class ClipWrap():
+    def __init__(self, model, data_path, device):
 
-        ```python
-        >>> from PIL import Image
-        >>> import requests
-        >>> from transformers import AutoProcessor, CLIPModel
-
-        >>> model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-        >>> processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
-
-        >>> url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-        >>> image = Image.open(requests.get(url, stream=True).raw)
-
-        >>> inputs = processor(
-        ...     text=["a photo of a cat", "a photo of a dog"],
-                images=image, return_tensors="pt", padding=True
-        ... )
-
-        >>> outputs = model(**inputs)
-        >>> logits_per_image = outputs.logits_per_image  # this is the image-text similarity score
-        >>> probs = logits_per_image.softmax(dim=1)  # we can take the softmax to get the label probabilities
-        ```"""
-    
-    def __init__(self, model, data_path, **kwargs):
-        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        # self.feature_extractor = CLIPFeatureExtractor.from_pretrained(
+        #     "openai/clip-vit-large-patch14",
+        #     do_resize=False, do_center_crop=False, do_normalize=False
+        # )
+        # self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        # self.processor = CLIPProcessor(self.feature_extractor, self.tokenizer)
+        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14",
+                                                       do_rescale=False,
+                                                       do_resize=False,
+                                                       do_center_crop=False,
+                                                       do_normalize=False
+                                                       )
         self.prompts = load_places365_categories(os.path.join(data_path, 'places365_cat.txt'))
+        self.device = device
         self.model = model
-        super().__init__(self.get_logits, **kwargs)
 
+    def __call__(self, x):
+        return self.get_logits(x)
 
     def get_logits(self, x):
+        # print(self.prompts)
         inputs = self.processor(images=x,               
                                 text=self.prompts,       
                                 return_tensors="pt",
-                                padding=True)
-
+                                padding=True,
+                                ).to(self.device)
         with torch.no_grad():
             outputs = self.model(**inputs)
 
         return outputs.logits_per_image
 
-    def predict(self, x):
-        logits = self.get_logits(x)
-        probs = logits.softmax(dim=1)
-        predictions = probs.argmax(dim=1)
-        return predictions # class ids
+    
+class AttackCLIP(RSAttack):
+    def __init__(self, model, data_path, **kwargs):
+        # self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        # self.prompts = load_places365_categories(os.path.join(data_path, 'places365_cat.txt'))
+        self.model = model
+        super().__init__(model, **kwargs)
+
+
+    # def get_logits(self, x):
+    #     inputs = self.processor(images=x,               
+    #                             text=self.prompts,       
+    #                             return_tensors="pt",
+    #                             padding=True)
+
+    #     with torch.no_grad():
+    #         outputs = self.model(**inputs)
+
+    #     return outputs.logits_per_image
+
+    # def predict(self, x):
+    #     logits = self.get_logits(x)
+    #     probs = logits.softmax(dim=1)
+    #     predictions = probs.argmax(dim=1)
+    #     return predictions # class ids
 
     
     def margin_and_loss(self, x, y):
@@ -150,7 +159,7 @@ class AttackCLIP(RSAttack):
             x (torch.Tensor): Batch of images (B, 3, H, W)
             y (torch.Tensor): Ground-truth GPS coordinates (B, 2)
         """
-        logits = self.get_logits(x)
+        logits = self.model(x)
 
         # same as in the attack_rs.py
         xent = F.cross_entropy(logits, y, reduction='none')

@@ -63,6 +63,7 @@ parser.add_argument('--out_pdf', type=str, default='',
                     help='Filename for the output PDF.')
 parser.add_argument('--num_samples', type=int, default=150,
                     help='How many samples to visualize.')
+parser.add_argument('--unnormalize', action='store_true')
 args = parser.parse_args()
 
 if not args.adv_pth:
@@ -97,7 +98,6 @@ print("Original x_test shape:", x_test.shape)
 
 assert x_test.shape == adv_images.shape, \
        f"Mismatch in shapes: x_test={x_test.shape}, adv={adv_images.shape}."
-
 
 
 

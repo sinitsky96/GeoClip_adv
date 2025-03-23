@@ -24,6 +24,14 @@ def get_transforms():
         transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
         ])
 
+def get_clip_transforms():
+    return transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.PILToTensor(),      
+        transforms.ConvertImageDtype(torch.float)
+    ])
+
 def download_data(data_dir):
     """
     Ensure that the dataset (images + CSV files) is present.
@@ -94,10 +102,31 @@ def load_places365_categories(txt_file_path):
             cat_str, label_str = line.rsplit(' ', 1)
             label_id = int(label_str)
 
-            cat_str = cat_str.strip('/')
-            _, cat_str = cat_str.rsplit('/', 1)
-            
-            mapping[label_id] = cat_str
+            parts = cat_str.strip('/').split('/')
+            parts = parts[1:] # Skip the first element (e.g., "g")
+
+            if len(parts) == 1: # single word label
+                label = parts[0]
+                if label[0] in ['a','u','i','o','e']:
+                    mapping[label_id] = f"a photo of an {label}"
+                else:
+                    mapping[label_id] = f"a photo of a {label}"
+            else: # word label with context (ex court\indoor, stadium\basketball)
+                if "indoor" in parts[1]:
+                    mapping[label_id] = f"an indoor scene of {parts[0]}" # ie indoor court, basketball stadium
+                elif "outdoor" in parts[1]:
+                    mapping[label_id] = f"an outdoor view of {parts[0]}" # ie indoor court, basketball stadium
+                else:
+                    if parts[1] in ['a','u','i','o','e']:
+                        mapping[label_id] = f"a photo of an {parts[1]} {parts[0]}"
+                    else:
+                        mapping[label_id] = f"a photo of a {parts[1]} {parts[0]}"
+
+            label = label.replace('_', ' ')
+            # if label[0] in ['a','u','i','o','e']:
+            #     mapping[label_id] = f"a photo of an {label}"
+            # else:
+            #     mapping[label_id] = f"a photo of a {label}"
     return mapping
 
 
@@ -259,21 +288,28 @@ def CLIP_load_data_tensor(data_dir,
 
     df = pd.read_csv(csv_path)
 
-    images = []
-    labels = []
+    X = []
+    clip_labels = []
+    locations = []
 
     for _, row in df.iterrows():
         img_filename = row["IMG_ID"]
         class_id = row["S365_Label"]
+
+        lat = row["LAT"]  
+        lon = row["LON"] 
+
         
         img_path = os.path.join(images_dir, img_filename)
         img = Image.open(img_path).convert("RGB")
         image = get_transforms()(img)
 
-        images.append(image)
-        labels.append(class_id)
+        X.append(image)
+        clip_labels.append(class_id)
+        locations.append((lat, lon))
+    
+    X = torch.stack(X, dim=0)
+    locations = torch.tensor(locations, dtype=torch.float)
+    labels_tensor = torch.tensor(clip_labels)
 
-    images = torch.stack(images, dim=0)
-    labels_tensor = torch.tensor(labels, dtype=str)
-
-    return images, labels_tensor
+    return X, labels_tensor, locations

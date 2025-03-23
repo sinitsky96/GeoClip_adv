@@ -5,14 +5,17 @@ import numpy as np
 
 
 from geoclip.model.GeoCLIP import GeoCLIP
-from data.Im2GPS3k.download import load_im2gps_data
-from sparse_rs.attack_sparse_rs import AttackGeoCLIP
+from data.Im2GPS3k.download import load_im2gps_data, CLIP_load_data_tensor
+from sparse_rs.attack_sparse_rs import AttackGeoCLIP, ClipWrap
 from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
 from transformers import CLIPProcessor, CLIPModel
 
 from datetime import datetime
 
 from utils import SingleChannelModel
+
+from torchvision import transforms
+
 
 
 def random_target_classes(y_pred, n_classes):
@@ -81,10 +84,16 @@ if __name__ == '__main__':
     cpu_device = torch.device("cpu")
 
     if args.dataset == 'Im2GPS3k':
-        x_test, y_test = load_im2gps_data(args.data_path)
+        if args.model == 'clip':
+            x_test, y_test, y_test_geo = CLIP_load_data_tensor(args.data_path)
+        else: # geo clip
+            x_test, y_test = load_im2gps_data(args.data_path)
         n_examples = y_test.shape[0]
         args.n_ex = n_examples
         print(f"ytest shape: P{y_test.shape}")
+        print(f"y_test: {y_test}")
+
+    
 
     elif args.dataset == 'YFCC26k':
         pass
@@ -98,6 +107,7 @@ if __name__ == '__main__':
         model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
         model.to(device)
         model.eval()
+        model = ClipWrap(model, args.data_path, device= device)
 
     
         
@@ -146,7 +156,6 @@ if __name__ == '__main__':
             p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
             loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
             data_loader=data_loader, resample_loc=args.resample_loc,device=device)
-        model = adversary.get_logits
     else:
         from rs_attacks import RSAttack
         adversary = RSAttack(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
@@ -188,7 +197,7 @@ if __name__ == '__main__':
             end_idx = min((batch_idx + 1) * bs, n_examples)
 
             x_curr = x_test[start_idx:end_idx].clone().detach().to(device)
-            y_curr = y_test[start_idx:end_idx].clone().detach()
+            y_curr = y_test[start_idx:end_idx].clone().detach().to(device)
 
             # print(f"x_curr shape before output, _ = model.predict_from_tensor(x_curr): {x_curr.shape}")
             # print(f"y_curr shape before output, _ = model.predict_from_tensor(x_curr): {y_curr.shape}")
@@ -198,9 +207,13 @@ if __name__ == '__main__':
             else: #CLIP
                 output = model(x_curr)
 
+            # print(f"output: {output}")
+            # print(f"output.max: {output.max(1)[1]}")
+            # print(f"y_curr: {y_curr}")
+
             # print(f"output shape: {output.shape}")
 
-            output = output.to(device=cpu_device)
+            # output = output.to(device=cpu_device)
             # y_curr = y_curr.to(device=device)
             
             if args.model.lower() == "geoclip":
@@ -236,6 +249,7 @@ if __name__ == '__main__':
         
         # run the attack
         pred_adv = pred.clone()
+        pert = pred.clone()
         for batch_idx in range(n_batches):
             # print(f"starting batch: {batch_idx+1}")
             start_idx = batch_idx * bs
@@ -260,8 +274,8 @@ if __name__ == '__main__':
             else: #CLIP
                 output = model(adv)
 
-            output = output.to(device=cpu_device)
-            y_curr = y_curr.to(device=cpu_device)
+            # output = output.to(device=cpu_device)
+            # y_curr = y_curr.to(device=cpu_device)
             # y_curr = y_curr.to(device=device)
 
             if args.model.lower() == "geoclip":
@@ -278,6 +292,7 @@ if __name__ == '__main__':
             
             pred_adv[ind_to_fool[start_idx:end_idx]] = acc_curr.clone()
             adv_complete[ind_to_fool[start_idx:end_idx]] = adv.cpu().clone()
+            # pert[ind_to_fool[start_idx:end_idx]] = (adv - x_curr).cpu().clone()
             qr_complete[ind_to_fool[start_idx:end_idx]] = qr_curr.cpu().clone()
             
             print('batch {}/{} - {:.0f} of {} successfully perturbed'.format(
@@ -303,7 +318,7 @@ if __name__ == '__main__':
             end_idx = min((batch_idx + 1) * bs, n_examples)
 
             x_curr = adv_complete[start_idx:end_idx].clone().detach().to(device)
-            y_curr = y_test[start_idx:end_idx].clone().detach()
+            y_curr = y_test[start_idx:end_idx].clone().detach().to(device)
             # output = model(x_curr)
             
             if args.model.lower() == "geoclip":
@@ -314,7 +329,7 @@ if __name__ == '__main__':
             # print(f"output shape: {output.shape}")
             # print(f"y_curr shape: {y_curr.shape}")
 
-            output = output.to(device=cpu_device)
+            # output = output.to(device=cpu_device)
             # y_curr = y_curr.to(device=device)
 
             if args.model.lower() == "geoclip":
@@ -345,6 +360,82 @@ if __name__ == '__main__':
         str_stats += '[correctly classified points] avg # queries {:.1f} - med # queries {:.1f}\n'.format(
             qr_complete[ind_corrcl].float().mean(), torch.median(qr_complete[ind_corrcl].float()))
         adversary.logger.log(str_stats)
+
+        if args.model.lower() == 'clip': # run adv photos on geoclip
+            # check robust accuracy and other statistics
+            model = GeoCLIP()
+            model.to(device)
+            model.eval()
+
+            all_diff = []
+            all_clean_dist = []
+            all_adv_dist = []
+
+            trans = transforms.Compose([transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
+            n_batches = int(np.ceil(n_examples / bs))
+            for batch_idx in range(n_batches):
+                torch.cuda.empty_cache()
+
+                start_idx = batch_idx * bs
+                end_idx = min((batch_idx + 1) * bs, n_examples)
+
+                x_curr_clean = x_test[start_idx:end_idx].clone().detach().to(device)
+                x_curr_adv = adv_complete[start_idx:end_idx].clone().detach().to(device)
+                y_curr = y_test_geo[start_idx:end_idx].clone().detach().to(device)
+                
+                diff_imgs = (x_curr_clean - x_curr_adv).abs().view(x_curr_clean.shape[0], -1).max(dim=1)[0]
+                threshold = 1e-6  # images with maximum difference below this are considered unaltered
+                successful_mask = diff_imgs > threshold
+
+                if successful_mask.sum() == 0:
+                    continue
+
+                x_curr_clean = x_curr_clean[successful_mask]
+                x_curr_adv = x_curr_adv[successful_mask]
+                y_curr = y_curr[successful_mask]
+                
+                output_clean, _ = model.predict_from_tensor(x_curr_clean)
+                output_adv, _ = model.predict_from_tensor(x_curr_adv)
+
+                clean_dist = haversine_distance(output_clean, y_curr)
+                adv_dist = haversine_distance(output_adv, y_curr)
+                
+                diff_batch  = adv_dist - clean_dist
+
+                all_diff.append(diff_batch.cpu())
+                all_clean_dist.append(clean_dist.cpu())
+                all_adv_dist.append(adv_dist.cpu())
+
+
+            
+            if len(all_diff) > 0:
+                all_diff = torch.cat(all_diff)
+                all_clean_dist = torch.cat(all_clean_dist)
+                all_adv_dist = torch.cat(all_adv_dist)
+
+                # Compute statistics for examples where the adversarial perturbation increased the predicted distance
+                pos_mask = all_diff > 0
+                num_total = all_diff.numel()
+                num_pos = pos_mask.sum().item()
+                percent_pos = (num_pos / num_total) * 100.0
+
+                if num_pos > 0:
+                    avg_increase = all_diff[pos_mask].mean().item()
+                    median_increase = all_diff[pos_mask].median().item()
+                else:
+                    avg_increase = 0.0
+                    median_increase = 0.0
+
+                adversary.logger.log("Transfer learning stats:")
+                adversary.logger.log(f"Total examples evaluated (after filtering): {num_total}")
+                adversary.logger.log(f"Percentage of examples with increased predicted distance: {percent_pos:.2f}%")
+                adversary.logger.log(f"Average increase in predicted distance (km) for those examples: {avg_increase:.2f}")
+                adversary.logger.log(f"Median increase in predicted distance (km) for those examples: {median_increase:.2f}")
+            else:
+                adversary.logger.log("No successful adversarial examples found during transfer learning evaluation.")
+                       
+                    
+                
         
 
         # save results depending on the threat model
