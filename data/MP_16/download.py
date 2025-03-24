@@ -95,32 +95,27 @@ def download_data(data_dir):
     else:
         print(f"Sampled CSV already found at {sampled_csv_path}; skipping KMeans sampling.")
 
-    # 4) Read mp16_sampled.csv and unify slash -> underscore
     sampled_df = pd.read_csv(sampled_csv_path)
     # Convert in-place
     sampled_df["IMG_ID"] = sampled_df["IMG_ID"].apply(lambda x: x.replace('/', '_'))
     # Overwrite the CSV so future runs are consistent
     sampled_df.to_csv(sampled_csv_path, index=False)
 
-    # 5) Compare with local images to see what's missing
-    local_filenames = set(os.listdir(images_path))  # everything in images/
+    local_filenames = set(os.listdir(images_path)) 
     needed_ids = set(sampled_df["IMG_ID"])
-    missing_ids = needed_ids - local_filenames  # which ones not on disk?
+    missing_ids = needed_ids - local_filenames 
 
     if not missing_ids:
         print("All sampled images are already present on disk. No re-download needed.")
     else:
         print(f"Found {len(missing_ids)} missing images. Re-downloading those.")
 
-        # 6) Load the full URLs CSV and also unify slash -> underscore
         urls_df = pd.read_csv(urls_csv_path, header=None, names=["IMG_PATH", "URL"])
         urls_df["IMG_ID"] = urls_df["IMG_PATH"].apply(lambda x: x.replace('/', '_'))
 
-        # 7) Filter the URLs DF to only the missing images
         missing_urls_df = urls_df[urls_df["IMG_ID"].isin(missing_ids)]
         print(f"Found {len(missing_urls_df)} images in URLs file that match the missing IDs.")
 
-        # 8) If we find rows, we download them
         if not missing_urls_df.empty:
             # Write to a temp CSV and call download_images_from_urls
             tmp_missing_csv = os.path.join(mp16_path, "mp16_missing_urls.csv")
@@ -129,7 +124,7 @@ def download_data(data_dir):
             download_images_from_urls(
                 urls_csv_path=tmp_missing_csv,
                 images_path=images_path,
-                max_images=None,     # or set a limit if you want
+                max_images=None,
                 num_workers=8
             )
         else:

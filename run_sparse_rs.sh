@@ -148,11 +148,11 @@ export PYTHONPATH=$PYTHONPATH:/home/daniellebed/project/GeoClip_adv
 # tests
 
 # python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 2 --k 1 --device cuda
-python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 150 --n_queries 10 --eps 16 --k 4 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model geoclip --norm patches --bs 150 --n_queries 10 --eps 16 --k 4 --device cuda
 
 
 # python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 11 --k 1 --device cuda
 # python ./sparse_rs/eval.py --loss ce --model geoclip --norm L0 --bs 32 --n_queries 11 --k 1 --device cuda
 # python ./sparse_rs/eval.py --loss ce --model geoclip --targeted --target_class "(48.858093, 2.294694)" --norm L0 --bs 32 --n_queries 11 --k 1 --device cuda
-# python ./sparse_rs/eval.py --loss margin --model clip --norm L0 --bs 32 --n_queries 11 --k 1 --device cuda
+python ./sparse_rs/eval.py --loss margin --model clip --norm L0 --bs 32 --n_queries 11 --k 1 --device cuda
 # python ./sparse_rs/eval.py --loss ce --model clip --norm L0 --bs 32 --n_queries 11 --k 1 --device cuda

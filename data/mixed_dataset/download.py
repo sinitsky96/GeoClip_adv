@@ -202,35 +202,67 @@ def create_mixed_dataset(data_dir, samples_per_dataset=75):
     im2gps_path, im2gps_images_path, im2gps_csv_path, _ = download_im2gps(data_dir)
     mp16_path, mp16_images_path, mp16_csv_path, mp16_urls_csv = download_mp16(data_dir)
     
-    # Download MP-16 images if needed
-    print("Checking and downloading MP-16 images...")
-    available_mp16_images = download_images_from_urls(mp16_urls_csv, mp16_images_path)
-    if not available_mp16_images:
-        raise RuntimeError("Failed to download any MP-16 images. Please check your internet connection.")
-    
-    # Create sampled datasets if they don't exist
+    # # Download MP-16 images if needed
+    # print("Checking and downloading MP-16 images...")
+    # available_mp16_images = download_images_from_urls(mp16_urls_csv, mp16_images_path)
+    # if not available_mp16_images:
+    #     raise RuntimeError("Failed to download any MP-16 images. Please check your internet connection.")
+    output_path = os.path.join(data_dir, 'mixed_dataset', SAMPLED_CSV)
+    if os.path.exists(output_path):
+        return pd.read_csv(output_path)
+    # # Create sampled datasets if they don't exist
     mp16_sampled_path = os.path.join(mp16_path, "mp16_sampled.csv")
-    if not os.path.exists(mp16_sampled_path):
-        print("Sampling MP-16 dataset...")
-        sample_mp16(mp16_csv_path, mp16_sampled_path)
+    # if not os.path.exists(mp16_sampled_path):
+    #     print("Sampling MP-16 dataset...")
+    #     sample_mp16(mp16_csv_path, mp16_sampled_path)
     
     # Load data from both datasets
     im2gps_df = pd.read_csv(os.path.join(im2gps_path, "sampled_data.csv"))
     mp16_df = pd.read_csv(mp16_sampled_path)  # Now using the correct path that we ensured exists
     
-    # Take first N samples from each dataset
-    im2gps_df = im2gps_df.head(samples_per_dataset)
-    mp16_df = mp16_df.head(samples_per_dataset)
+    valid_im2gps_rows = []
+    for _, row in im2gps_df.iterrows():
+        img_id = row["IMG_ID"]
+        
+        img_path = os.path.join(im2gps_images_path, img_id)
+        if os.path.exists(img_path):
+            valid_im2gps_rows.append(row)
+    
+    valid_im2gps_df = pd.DataFrame(valid_im2gps_rows)
+    print(f"Found {len(valid_im2gps_df)} valid Im2GPS images on disk.")
+    
+    # Take the first samples_per_dataset (or fewer if not enough)
+    valid_im2gps_df = valid_im2gps_df.head(samples_per_dataset)
+    print(f"Taking {len(valid_im2gps_df)} from Im2GPS (wanted {samples_per_dataset}).")
+    
+    valid_mp16_rows = []
+    for _, row in mp16_df.iterrows():
+        img_id = row["IMG_ID"]
+        
+        img_path = os.path.join(mp16_images_path, img_id)
+        if os.path.exists(img_path):
+            valid_mp16_rows.append(row)
+    
+    valid_mp16_df = pd.DataFrame(valid_mp16_rows)
+    print(f"Found {len(valid_mp16_df)} valid MP-16 images on disk.")
+    
+    # Take the first samples_per_dataset (or fewer if not enough)
+    valid_mp16_df = valid_mp16_df.head(samples_per_dataset)
+    print(f"Taking {len(valid_mp16_df)} from MP-16 (wanted {samples_per_dataset}).")
+    
+
+    # # Take first N samples from each dataset
+    # im2gps_df = im2gps_df.head(samples_per_dataset)
+    # mp16_df = mp16_df.head(samples_per_dataset)
     
     # Add dataset identifier
-    im2gps_df['dataset'] = 'im2gps'
-    mp16_df['dataset'] = 'mp16'
+    valid_im2gps_df['dataset'] = 'im2gps'
+    valid_mp16_df['dataset'] = 'mp16'
     
     # Combine datasets
-    mixed_df = pd.concat([im2gps_df, mp16_df], ignore_index=True)
-    
+    mixed_df = pd.concat([valid_im2gps_df, valid_mp16_df], ignore_index=True)    
     # Save combined dataset
-    output_path = os.path.join(data_dir, 'mixed_dataset', SAMPLED_CSV)
+    
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     mixed_df.to_csv(output_path, index=False)
     
