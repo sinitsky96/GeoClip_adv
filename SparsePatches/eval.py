@@ -7,7 +7,8 @@ from torchvision import transforms
 from tqdm import tqdm
 
 from geoclip.model.GeoCLIP import GeoCLIP
-from data.Im2GPS.download import load_im2gps_data, get_transforms
+from data.Im2GPS.download import load_im2gps_data, get_transforms as get_im2gps_transforms
+from data.MP_16.download import load_mp16_data, get_transforms as get_mp16_transforms
 from transformers import CLIPModel
 
 from SparsePatches.attack_sparse_patches import AttackGeoCLIP_SparsePatches, AttackCLIP_SparsePatches, AttackGeoCLIP_SparsePatches_Kernel
@@ -42,9 +43,10 @@ if __name__ == '__main__':
     parser.add_argument('--target_class', type=eval)
 
     parser.add_argument('--model', default='geoclip', type=str)
-    parser.add_argument('--dataset', type=str, default='Im2GPS')  # Im2GPS, YFCC26k
+    parser.add_argument('--dataset', type=str, default='Im2GPS3k', choices=['Im2GPS', 'Im2GPS3k', 'YFCC26k', 'MP_16'])
     parser.add_argument('--save_dir', type=str, default='./results')
     parser.add_argument('--data_path', type=str, default="./data")
+    parser.add_argument('--max_images', type=int, default=1000, help='Maximum number of images to download for MP-16 dataset')
 
     parser.add_argument('--device', type=str, default='cuda')
     
@@ -64,7 +66,7 @@ if __name__ == '__main__':
 
     if args.dataset == 'Im2GPS':
         # Get transforms for preprocessing images
-        transform = get_transforms(apply_transforms=True)
+        transform = get_im2gps_transforms(apply_transforms=True)
         
         # Load data
         x_list, y_list = load_im2gps_data(args.data_path, transform=transform)
@@ -93,6 +95,35 @@ if __name__ == '__main__':
     elif args.dataset == 'YFCC26k':
         # Add YFCC26k data loading if needed
         pass
+    
+    elif args.dataset == 'MP_16':
+        # Get transforms for preprocessing MP-16 images
+        transform = get_mp16_transforms(apply_transforms=True)
+        
+        # Load data with a limit on the number of images to download
+        print(f"Loading MP-16 dataset with max_images={args.max_images}")
+        x_list, y_list = load_mp16_data(args.data_path, max_images=args.max_images, transform=transform)
+        
+        # Convert image list to tensor
+        x_tensors = []
+        for img in x_list:
+            if not isinstance(img, torch.Tensor):
+                img = transform(img)
+            x_tensors.append(img)
+        
+        # Stack all images into a single tensor
+        x_test = torch.stack(x_tensors)
+        
+        # Convert coordinates list to tensor 
+        y_coords = []
+        for coords in y_list:
+            y_coords.append(torch.tensor(coords, dtype=torch.float32))
+        
+        y_test = torch.stack(y_coords)
+        
+        n_examples = len(x_test)
+        args.n_ex = min(args.n_ex, n_examples)
+        print("x_test shape: {}, y_test shape: {}".format(x_test.shape, y_test.shape))
 
     # Load the model
     if args.model.lower() == "geoclip":
