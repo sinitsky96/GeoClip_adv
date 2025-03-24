@@ -1,6 +1,6 @@
 
-geoclip_adv_attacks/data/mp16_pro/images/
-geoclip_adv_attacks/data/Im2GPS3k/images/
+/data/mp16_pro/images/
+/data/Im2GPS3k/images/
 
 *.csv
 
@@ -10,4 +10,9 @@ geoclip_adv_attacks/data/Im2GPS3k/images/
 
 *.pt
 
-geoclip_adv_attacks/results/real_data_evaluation/evaluation_results.txt
+run_commnad.txt
+/.venv/
+data/Im2GPS3k/im2gps3ktest.zip
+slurm-test.out
+run_sparse_rs.sh
+results/

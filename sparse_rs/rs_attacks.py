@@ -20,6 +20,7 @@ import copy
 import sys
 from utils import Logger
 import os
+from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
 
 
 class RSAttack():
@@ -66,7 +67,11 @@ class RSAttack():
             init_patches='random_squares',
             resample_loc=None,
             data_loader=None,
-            update_loc_period=None):
+            update_loc_period=None,
+            geoclip_attack=False,
+            mask_failed=False,
+            early_stop_fool=False
+            ):
         """
         Sparse-RS implementation in PyTorch
         """
@@ -89,7 +94,9 @@ class RSAttack():
         self.resample_loc = n_queries // 10 if resample_loc is None else resample_loc
         self.data_loader = data_loader
         self.update_loc_period = update_loc_period if not update_loc_period is None else 4 if not targeted else 10
-        
+        self.geoclip_attack = geoclip_attack
+        self.mask_failed = mask_failed
+        self.early_stop_fool = early_stop_fool
     
     def margin_and_loss(self, x, y):
         """
@@ -123,8 +130,8 @@ class RSAttack():
         self.ndims = len(self.orig_dim)
         if self.seed is None:
             self.seed = time.time()
-        if self.targeted:
-            self.loss = 'ce'
+        # if self.targeted:
+        #     self.loss = 'ce'
         
     def random_target_classes(self, y_pred, n_classes):
         y = torch.zeros_like(y_pred)
@@ -272,26 +279,40 @@ class RSAttack():
                 
                 x_best = x.clone()
                 n_pixels = h * w
-                b_all, be_all = torch.zeros([x.shape[0], eps]).long(), torch.zeros([x.shape[0], n_pixels - eps]).long()
+                # b_all = torch.zeros([x.shape[0], eps]).long()
+                # be_all = torch.zeros([x.shape[0], n_pixels - eps]).long()
+                b_all = torch.zeros((n_ex_total, eps), device=self.device, dtype=torch.long)
+                be_all = torch.zeros((n_ex_total, n_pixels - eps), device=self.device, dtype=torch.long)
+            
                 for img in range(x.shape[0]):
-                    ind_all = torch.randperm(n_pixels)
+                    # ind_all = torch.randperm(n_pixels)
+                    ind_all = torch.randperm(n_pixels, device=self.device)
                     ind_p = ind_all[:eps]
                     ind_np = ind_all[eps:]
                     x_best[img, :, ind_p // w, ind_p % w] = self.random_choice([c, eps]).clamp(0., 1.)
                     b_all[img] = ind_p.clone()
                     be_all[img] = ind_np.clone()
+
+                
+                # print(f"x_best, y device before margin_min, loss_min = self.margin_and_loss(x_best, y): {x_best.device}, {y.device}")
+
                     
                 margin_min, loss_min = self.margin_and_loss(x_best, y)
+                # margin_min = margin_min.to(self.device)
+                # loss_min = loss_min.to(self.device)
                 n_queries = torch.ones(x.shape[0]).to(self.device)
                 
                 for it in range(1, self.n_queries):
                     # check points still to fool
                     idx_to_fool = (margin_min > 0.).nonzero().squeeze()
+                    if idx_to_fool.numel() == 0:
+                        break
                     x_curr = self.check_shape(x[idx_to_fool])
                     x_best_curr = self.check_shape(x_best[idx_to_fool])
                     y_curr = y[idx_to_fool]
                     margin_min_curr = margin_min[idx_to_fool]
                     loss_min_curr = loss_min[idx_to_fool]
+
                     b_curr, be_curr = b_all[idx_to_fool], be_all[idx_to_fool]
                     if len(y_curr.shape) == 0:
                         y_curr.unsqueeze_(0)
@@ -304,8 +325,10 @@ class RSAttack():
                     # build new candidate
                     x_new = x_best_curr.clone()
                     eps_it = max(int(self.p_selection(it) * eps), 1)
-                    ind_p = torch.randperm(eps)[:eps_it]
-                    ind_np = torch.randperm(n_pixels - eps)[:eps_it]
+                    # ind_p = torch.randperm(eps)[:eps_it]
+                    # ind_np = torch.randperm(n_pixels - eps)[:eps_it]
+                    ind_p = torch.randperm(eps, device=self.device)[:eps_it]
+                    ind_np = torch.randperm(n_pixels - eps, device=self.device)[:eps_it]
                     
                     for img in range(x_new.shape[0]):
                         p_set = b_curr[img, ind_p]
@@ -323,16 +346,25 @@ class RSAttack():
                             x_new[img, :, np_set // w, np_set % w] = new_clr.clone()
                         
                     # compute loss of the new candidates
+                    # print("starting margin_and_loss")
                     margin, loss = self.margin_and_loss(x_new, y_curr)
+                    # print(f"finished margin_and_loss: {margin}")
                     n_queries[idx_to_fool] += 1
                     
                     # update best solution
                     idx_improved = (loss < loss_min_curr).float()
                     idx_to_update = (idx_improved > 0.).nonzero().squeeze()
+
+                    # print(f"loss_min.device: {loss_min.device}\n \
+                    #       idx_to_fool.device: {idx_to_fool.device}\n \
+                    #       loss_min.device: {idx_to_update.device}")
+
+
                     loss_min[idx_to_fool[idx_to_update]] = loss[idx_to_update]
         
                     idx_miscl = (margin < -1e-6).float()
                     idx_improved = torch.max(idx_improved, idx_miscl)
+                    # idx_improved = idx_improved | idx_miscl  # Logical OR on GPU
                     nimpr = idx_improved.sum().item()
                     if nimpr > 0.:
                         idx_improved = (idx_improved.view(-1) > 0).nonzero().squeeze()
@@ -353,21 +385,39 @@ class RSAttack():
                     
                     # log results current iteration
                     ind_succ = (margin_min <= 0.).nonzero().squeeze()
-                    if self.verbose and ind_succ.numel() != 0:
-                        self.logger.log(' '.join(['{}'.format(it + 1),
-                            '- success rate={}/{} ({:.2%})'.format(
-                            ind_succ.numel(), n_ex_total,
-                            float(ind_succ.numel()) / n_ex_total),
-                            '- avg # queries={:.1f}'.format(
-                            n_queries[ind_succ].mean().item()),
-                            '- med # queries={:.1f}'.format(
-                            n_queries[ind_succ].median().item()),
-                            '- loss={:.3f}'.format(loss_min.mean()),
-                            '- max pert={:.0f}'.format(((x_new - x_curr).abs() > 0
-                            ).max(1)[0].view(x_new.shape[0], -1).sum(-1).max()),
-                            '- epsit={:.0f}'.format(eps_it),
-                            ]))
+                    # if self.verbose and ind_succ.numel() != 0:
+                    #     self.logger.log(' '.join(['{}'.format(it + 1),
+                    #         '- success rate={}/{} ({:.2%})'.format(
+                    #         ind_succ.numel(), n_ex_total,
+                    #         float(ind_succ.numel()) / n_ex_total),
+                    #         '- avg # queries={:.1f}'.format(
+                    #         n_queries[ind_succ].mean().item()),
+                    #         '- med # queries={:.1f}'.format(
+                    #         n_queries[ind_succ].median().item()),
+                    #         '- loss={:.3f}'.format(loss_min.mean()),
+                    #         '- max pert={:.0f}'.format(((x_new - x_curr).abs() > 0
+                    #         ).max(1)[0].view(x_new.shape[0], -1).sum(-1).max()),
+                    #         '- epsit={:.0f}'.format(eps_it),
+                    #         ]))
                     
+                    if self.verbose and ind_succ.numel() != 0:
+                        # Convert scalar tensors to Python scalars only when needed for logging
+                        succ_rate = float(ind_succ.numel()) / n_ex_total
+                        avg_queries = n_queries[ind_succ].mean().item()
+                        med_queries = n_queries[ind_succ].median().item()
+                        loss_avg = loss_min.mean().item()
+                        max_pert = ((x_new - x_curr).abs() > 0).max(1)[0].view(x_new.shape[0], -1).sum(-1).max().item()
+                        
+                        # Log the formatted message
+                        self.logger.log(' '.join([
+                            f'{it + 1}',
+                            f'- success rate={ind_succ.numel()}/{n_ex_total} ({succ_rate:.2%})',
+                            f'- avg # queries={avg_queries:.1f}',
+                            f'- med # queries={med_queries:.1f}',
+                            f'- loss={loss_avg:.3f}',
+                            f'- max pert={max_pert:.0f}',
+                            f'- epsit={eps_it:.0f}',
+                        ]))
                     if ind_succ.numel() == n_ex_total:
                         break
               
@@ -377,8 +427,10 @@ class RSAttack():
                 s = int(math.ceil(self.eps ** .5))
                 x_best = x.clone()
                 x_new = x.clone()
-                loc = torch.randint(h - s, size=[x.shape[0], 2])
-                patches_coll = torch.zeros([x.shape[0], c, s, s]).to(self.device)
+                # loc = torch.randint(h - s, size=[x.shape[0], 2])
+                # patches_coll = torch.zeros([x.shape[0], c, s, s]).to(self.device)
+                loc = torch.randint(0, h - s + 1, (n_ex_total, 2), device=self.device)
+                patches_coll = torch.zeros((n_ex_total, c, s, s), device=self.device)
                 assert abs(self.update_loc_period) > 1
                 loc_t = abs(self.update_loc_period)
                 
@@ -402,11 +454,14 @@ class RSAttack():
                         loc[counter, 1]:loc[counter, 1] + s] = patches_coll[counter].clone()
         
                 margin_min, loss_min = self.margin_and_loss(x_new, y)
-                n_queries = torch.ones(x.shape[0]).to(self.device)
+                # n_queries = torch.ones(x.shape[0]).to(self.device)
+                n_queries = torch.ones(n_ex_total, device=self.device)
         
                 for it in range(1, self.n_queries):
                     # check points still to fool
                     idx_to_fool = (margin_min > -1e-6).nonzero().squeeze()
+                    if idx_to_fool.numel() == 0:
+                        break
                     x_curr = self.check_shape(x[idx_to_fool])
                     patches_curr = self.check_shape(patches_coll[idx_to_fool])
                     y_curr = y[idx_to_fool]
@@ -423,7 +478,8 @@ class RSAttack():
         
                     # sample update
                     s_it = int(max(self.p_selection(it) ** .5 * s, 1))
-                    p_it = torch.randint(s - s_it + 1, size=[2])
+                    p_it = torch.randint(0, s - s_it + 1, (2,), device=self.device)
+                    # p_it = torch.randint(s - s_it + 1, size=[2])
                     sh_it = int(max(self.sh_selection(it) * h, 0))
                     patches_new = patches_curr.clone()
                     x_new = x_curr.clone()
@@ -438,7 +494,8 @@ class RSAttack():
                             # update patch
                             if it < it_start_cu:
                                 if s_it > 1:
-                                    patches_new[counter, :, p_it[0]:p_it[0] + s_it, p_it[1]:p_it[1] + s_it] += self.random_choice([c, 1, 1])
+                                    patches_new[counter, :, p_it[0]:p_it[0] + s_it, p_it[1]:p_it[1] + s_it] += \
+                                          self.random_choice([c, 1, 1])
                                 else:
                                     # make sure to sample a different color
                                     old_clr = patches_new[counter, :, p_it[0]:p_it[0] + s_it, p_it[1]:p_it[1] + s_it].clone()
@@ -457,7 +514,8 @@ class RSAttack():
                             patches_new[counter].clamp_(0., 1.)
                         if update_loc == 1:
                             # update location
-                            loc_new[counter] += (torch.randint(low=-sh_it, high=sh_it + 1, size=[2]))
+                            # loc_new[counter] += (torch.randint(low=-sh_it, high=sh_it + 1, size=[2]))
+                            loc_new[counter] += torch.randint(-sh_it, sh_it + 1, (2,), device=self.device)
                             loc_new[counter].clamp_(0, h - s)
                         
                         x_new[counter, :, loc_new[counter, 0]:loc_new[counter, 0] + s,
@@ -483,22 +541,37 @@ class RSAttack():
                         
                     # log results current iteration
                     ind_succ = (margin_min <= 0.).nonzero().squeeze()
+                    # if self.verbose and ind_succ.numel() != 0:
+                    #     self.logger.log(' '.join(['{}'.format(it + 1),
+                    #         '- success rate={}/{} ({:.2%})'.format(
+                    #         ind_succ.numel(), n_ex_total,
+                    #         float(ind_succ.numel()) / n_ex_total),
+                    #         '- avg # queries={:.1f}'.format(
+                    #         n_queries[ind_succ].mean().item()),
+                    #         '- med # queries={:.1f}'.format(
+                    #         n_queries[ind_succ].median().item()),
+                    #         '- loss={:.3f}'.format(loss_min.mean()),
+                    #         '- max pert={:.0f}'.format(((x_new - x_curr).abs() > 0
+                    #         ).max(1)[0].view(x_new.shape[0], -1).sum(-1).max()),
+                    #         #'- sit={:.0f} - sh={:.0f}'.format(s_it, sh_it),
+                    #         '{}'.format(' - loc' if update_loc == 1. else ''),
+                    #         ]))
                     if self.verbose and ind_succ.numel() != 0:
-                        self.logger.log(' '.join(['{}'.format(it + 1),
-                            '- success rate={}/{} ({:.2%})'.format(
-                            ind_succ.numel(), n_ex_total,
-                            float(ind_succ.numel()) / n_ex_total),
-                            '- avg # queries={:.1f}'.format(
-                            n_queries[ind_succ].mean().item()),
-                            '- med # queries={:.1f}'.format(
-                            n_queries[ind_succ].median().item()),
-                            '- loss={:.3f}'.format(loss_min.mean()),
-                            '- max pert={:.0f}'.format(((x_new - x_curr).abs() > 0
-                            ).max(1)[0].view(x_new.shape[0], -1).sum(-1).max()),
-                            #'- sit={:.0f} - sh={:.0f}'.format(s_it, sh_it),
-                            '{}'.format(' - loc' if update_loc == 1. else ''),
-                            ]))
-
+                        succ_rate = float(ind_succ.numel()) / n_ex_total
+                        avg_queries = n_queries[ind_succ].mean().item()
+                        med_queries = n_queries[ind_succ].median().item()
+                        loss_avg = loss_min.mean().item()
+                        max_pert = ((x_new - x_curr).abs() > 0).max(1)[0].view(x_new.shape[0], -1).sum(-1).max().item()
+                        
+                        self.logger.log(' '.join([
+                            f'{it + 1}',
+                            f'- success rate={ind_succ.numel()}/{n_ex_total} ({succ_rate:.2%})',
+                            f'- avg # queries={avg_queries:.1f}',
+                            f'- med # queries={med_queries:.1f}',
+                            f'- loss={loss_avg:.3f}',
+                            f'- max pert={max_pert:.0f}',
+                            f'{" - loc" if update_loc == 1 else ""}',
+                        ]))
                     if ind_succ.numel() == n_ex_total:
                         break
         
@@ -892,11 +965,10 @@ class RSAttack():
                             targeted attack -> target labels, if None random classes,
                             different from the predicted ones, are sampled
         """
-
+        # print(f"start pertub: {y}")
         self.init_hyperparam(x)
-
-        adv = x.clone()
         qr = torch.zeros([x.shape[0]]).to(self.device)
+        adv = x.clone()
         if y is None:
             if not self.targeted:
                 with torch.no_grad():
@@ -910,18 +982,34 @@ class RSAttack():
                     y_pred = output.max(1)[1]
                     y = self.random_target_classes(y_pred, n_classes)
         else:
-            y = y.detach().clone().long().to(self.device)
+            if self.geoclip_attack:
+                y = y.detach().clone().to(self.device)
+            else:
+                y = y.detach().clone().long().to(self.device)
 
-        if not self.targeted:
-            acc = self.predict(x).max(1)[1] == y
+        # print(f"y before if self.geoclip_attack: # distance: {y}")
+        if self.early_stop_fool == True:
+            if self.geoclip_attack: # distance
+                # print(f"x.shape: {x.shape}")
+                if x.dim() == 5 and x.size(1) == 1:
+                    x = x.squeeze(1)
+                if not self.targeted:
+                    acc = haversine_distance(self.predict(x), y) <= CONTINENT_R
+                else:
+                    acc = haversine_distance(self.predict(x), y) > STREET_R
+            else: # classes
+                if not self.targeted:
+                    acc = self.predict(x).max(1)[1] == y
+                else:
+                    acc = self.predict(x).max(1)[1] != y
         else:
-            acc = self.predict(x).max(1)[1] != y
+            acc = torch.ones(x.shape[0], dtype=torch.bool, device=x.device)
 
         startt = time.time()
 
-        torch.random.manual_seed(self.seed)
-        torch.cuda.random.manual_seed(self.seed)
-        np.random.seed(self.seed)
+        # torch.random.manual_seed(self.seed)
+        # torch.cuda.random.manual_seed(self.seed)
+        # np.random.seed(self.seed)
         
         for counter in range(self.n_restarts):
             ind_to_fool = acc.nonzero().squeeze()
@@ -931,23 +1019,41 @@ class RSAttack():
                 x_to_fool = x[ind_to_fool].clone()
                 y_to_fool = y[ind_to_fool].clone()
 
+                # print(f"x_to_fool, y_to_fool device before qr_curr, adv_curr = self.attack_single_run(x_to_fool, y_to_fool): {x_to_fool.device}, {y_to_fool.device}")
+
+                # print(f"starting attack_single_run, y_to_fool: {y_to_fool}")
                 qr_curr, adv_curr = self.attack_single_run(x_to_fool, y_to_fool)
-
-                output_curr = self.predict(adv_curr)
-                if not self.targeted:
-                    acc_curr = output_curr.max(1)[1] == y_to_fool
+                # print("finished attack_single_run")
+                if not self.mask_failed:
+                    adv[ind_to_fool] = adv_curr.clone()
+                    qr[ind_to_fool] = qr_curr.clone()
+                
                 else:
-                    acc_curr = output_curr.max(1)[1] != y_to_fool
-                ind_curr = (acc_curr == 0).nonzero().squeeze()
+                    output_curr = self.predict(adv_curr)
+                    if self.geoclip_attack: # distance
+                        if not self.targeted:
+                            acc_curr = haversine_distance(output_curr, y_to_fool) <= CONTINENT_R
+                        else:
+                            acc_curr = haversine_distance(output_curr, y_to_fool) > STREET_R
+                    else: # classes
+                        if not self.targeted:
+                            acc_curr = output_curr.max(1)[1] == y_to_fool
+                        else:
+                            acc_curr = output_curr.max(1)[1] != y_to_fool
 
-                acc[ind_to_fool[ind_curr]] = 0
-                adv[ind_to_fool[ind_curr]] = adv_curr[ind_curr].clone()
-                qr[ind_to_fool[ind_curr]] = qr_curr[ind_curr].clone()
-                if self.verbose:
-                    print('restart {} - robust accuracy: {:.2%}'.format(
-                        counter, acc.float().mean()),
-                        '- cum. time: {:.1f} s'.format(
-                        time.time() - startt))
+
+                    ind_curr = (acc_curr == 0).nonzero().squeeze()
+
+                    acc[ind_to_fool[ind_curr]] = 0 #indecies in acc that were fooled are set to 0
+                    
+                    adv[ind_to_fool[ind_curr]] = adv_curr[ind_curr].clone()
+                    qr[ind_to_fool[ind_curr]] = qr_curr[ind_curr].clone()
+                    
+                    if self.verbose:
+                        print('restart {} - robust accuracy: {:.2%}'.format(
+                            counter, acc.float().mean()),
+                            '- cum. time: {:.1f} s'.format(
+                            time.time() - startt))
 
         return qr, adv
 
