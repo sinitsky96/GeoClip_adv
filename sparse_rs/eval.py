@@ -145,8 +145,6 @@ if __name__ == '__main__':
     print("x_test shape: {}, y_test shape: {}".format(x_test.shape, y_test.shape))
 
 
-
-
     if args.model.lower() == "geoclip":
         model = GeoCLIP()
         model.to(device)
