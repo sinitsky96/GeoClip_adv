@@ -7,7 +7,7 @@
 *.png
 
 *.pyc
-
+*.jpg
 *.pt
 
 run_commnad.txt
@@ -16,3 +16,4 @@ data/Im2GPS3k/im2gps3ktest.zip
 slurm-test.out
 run_sparse_rs.sh
 results/
+

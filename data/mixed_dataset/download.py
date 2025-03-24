@@ -98,18 +98,45 @@ class MixedDataset(Dataset):
         
         self.data = pd.read_csv(csv_path)
         
-        # Verify images exist
+        # Verify images exist and can be loaded
         self.valid_indices = []
+        valid_im2gps = 0
+        valid_mp16 = 0
+        
         for idx, row in enumerate(self.data.iterrows()):
             dataset = row[1]["dataset"]
+            img_id = row[1]["IMG_ID"]
+            
+            # Handle different path formats
+            if dataset == "mp16":
+                # MP-16 images might have paths with slashes, convert to underscores
+                img_id = img_id.replace('/', '_')
+            
             img_path = os.path.join(
                 self.im2gps_dir if dataset == "im2gps" else self.mp16_dir,
-                row[1]["IMG_ID"]
+                img_id
             )
-            if os.path.exists(img_path):
-                self.valid_indices.append(idx)
+            
+            try:
+                if os.path.exists(img_path):
+                    # Try to load the image to verify it's valid
+                    with Image.open(img_path) as img:
+                        img = img.convert("RGB")
+                        self.valid_indices.append(idx)
+                        if dataset == "im2gps":
+                            valid_im2gps += 1
+                        else:
+                            valid_mp16 += 1
+            except Exception as e:
+                print(f"Error verifying image {img_path}: {e}")
+                continue
         
-        print(f"Found {len(self.valid_indices)} valid images out of {len(self.data)}")
+        if len(self.valid_indices) == 0:
+            raise RuntimeError("No valid images found in the dataset. Please check the image paths and files.")
+            
+        print(f"Found {len(self.valid_indices)} valid images out of {len(self.data)}:")
+        print(f"  - Im2GPS3k: {valid_im2gps} images")
+        print(f"  - MP-16: {valid_mp16} images")
         
     def __len__(self):
         return len(self.valid_indices)
@@ -120,41 +147,36 @@ class MixedDataset(Dataset):
         row = self.data.iloc[actual_idx]
         
         dataset = row["dataset"]
-        image_file = row["IMG_ID"]
-        lat = row["LAT"]
-        lon = row["LON"]
-        places365_label = row["S365_Label"]
+        img_id = row["IMG_ID"]
         
+        # Handle different path formats
+        if dataset == "mp16":
+            img_id = img_id.replace('/', '_')
+            
         # Full path to the image
         img_path = os.path.join(
             self.im2gps_dir if dataset == "im2gps" else self.mp16_dir,
-            image_file
+            img_id
         )
         
-        # Load the image
-        try:
-            image = Image.open(img_path).convert("RGB")
+        # Load and process the image
+        image = Image.open(img_path).convert("RGB")
+        if getattr(image, "n_frames", 1) > 1:
+            image.seek(0)
             
-            # Handle multiple frames if needed
-            if getattr(image, "n_frames", 1) > 1:
-                image.seek(0)
-                
-            if self.transform:
-                image = self.transform(image)
-                
-            target = torch.tensor([lat, lon], dtype=torch.float)
-            if self.clip_varient:
-                label = torch.tensor(places365_label)
-                return image, target, label
-            # Return (image, (lat, lon))
-            return image, target
+        if self.transform:
+            image = self.transform(image)
             
-        except Exception as e:
-            print(f"Error loading image {img_path}: {e}")
-            # Return a random dummy sample in case of error
-            dummy_img = torch.rand(3, 224, 224)
-            dummy_target = torch.tensor([0.0, 0.0], dtype=torch.float)
-            return dummy_img, dummy_target
+        # Prepare targets
+        lat = row["LAT"]
+        lon = row["LON"]
+        target = torch.tensor([lat, lon], dtype=torch.float)
+        
+        if self.clip_varient:
+            label = torch.tensor(row["S365_Label"])
+            return image, target, label
+            
+        return image, target
 
 def create_mixed_dataset(data_dir, samples_per_dataset=75):
     """
@@ -168,32 +190,33 @@ def create_mixed_dataset(data_dir, samples_per_dataset=75):
         DataFrame containing the mixed dataset
     """
     # Import data from both datasets
-    from Im2GPS3k.download import download_data as download_im2gps, sample_kmeans as sample_im2gps
-    from MP_16.download import download_data as download_mp16, sample_kmeans as sample_mp16
+    from Im2GPS3k.download import download_data as download_im2gps
+    from MP_16.download import (
+        download_data as download_mp16,
+        download_images_from_urls,
+        download_image,
+        sample_kmeans as sample_mp16
+    )
     
     # Download/prepare both datasets
     im2gps_path, im2gps_images_path, im2gps_csv_path, _ = download_im2gps(data_dir)
-    mp16_path, mp16_images_path, mp16_csv_path, _ = download_mp16(data_dir)
+    mp16_path, mp16_images_path, mp16_csv_path, mp16_urls_csv = download_mp16(data_dir)
     
-    # Ensure sampled data exists for both datasets
-    im2gps_sampled_path = os.path.join(im2gps_path, "sampled_data.csv")
+    # Download MP-16 images if needed
+    print("Checking and downloading MP-16 images...")
+    available_mp16_images = download_images_from_urls(mp16_urls_csv, mp16_images_path)
+    if not available_mp16_images:
+        raise RuntimeError("Failed to download any MP-16 images. Please check your internet connection.")
+    
+    # Create sampled datasets if they don't exist
     mp16_sampled_path = os.path.join(mp16_path, "mp16_sampled.csv")
-    
-    if not os.path.exists(im2gps_sampled_path):
-        print("Sampling Im2GPS3k dataset...")
-        sample_im2gps(im2gps_csv_path, im2gps_sampled_path)
-    
     if not os.path.exists(mp16_sampled_path):
-        print("Sampling MP_16 dataset...")
+        print("Sampling MP-16 dataset...")
         sample_mp16(mp16_csv_path, mp16_sampled_path)
     
     # Load data from both datasets
-    try:
-        im2gps_df = pd.read_csv(im2gps_sampled_path)
-        mp16_df = pd.read_csv(mp16_sampled_path)
-    except Exception as e:
-        print(f"Error loading dataset files: {e}")
-        raise
+    im2gps_df = pd.read_csv(os.path.join(im2gps_path, "sampled_data.csv"))
+    mp16_df = pd.read_csv(mp16_sampled_path)  # Now using the correct path that we ensured exists
     
     # Take first N samples from each dataset
     im2gps_df = im2gps_df.head(samples_per_dataset)

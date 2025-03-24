@@ -45,17 +45,29 @@ def download_data(data_dir):
     download_images_path = os.path.join(Im2GPS3k_path, 'download_images.sh')
     download_csv_path = os.path.join(Im2GPS3k_path, 'download_csv.sh')
 
-    # if not os.path.exists(images_path):
-    #     print("Images directory not found. Downloading dataset...")
-    #     subprocess.run(["bash", download_images_path, Im2GPS3k_path])
-
-    # if not os.path.exists(csv_path_1) or not os.path.exists(csv_path_2):
+    # Create directories if they don't exist
+    os.makedirs(images_path, exist_ok=True)
+    
+    # Download CSV files if needed
     if not os.path.exists(csv_path_1):
         print("CSV file(s) not found. Downloading CSVs...")
         subprocess.run(["bash", download_csv_path, Im2GPS3k_path])
 
+    # Check if images directory is empty
+    if not os.path.exists(images_path) or not any(os.listdir(images_path)):
+        print("\nWARNING: Im2GPS3k images directory is empty!")
+        print("Please manually download the Im2GPS3k test set from:")
+        print("http://www.mediafire.com/file/7ht7sn78q27o9we/im2gps3ktest.zip")
+        print(f"And extract it to: {images_path}")
+        print("The automatic download is currently not working due to MediaFire restrictions.\n")
+    
+    # Create sampled dataset if needed
     if not os.path.exists(sample_path):
-        sample_kmeans(csv_path_1, sample_path)
+        if os.path.exists(csv_path_1):
+            print("Creating sampled dataset...")
+            sample_kmeans(csv_path_1, sample_path)
+        else:
+            raise RuntimeError(f"Cannot create sampled dataset: {csv_path_1} not found")
         
     return Im2GPS3k_path, images_path, csv_path_1, csv_path_2
 

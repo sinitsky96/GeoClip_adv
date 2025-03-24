@@ -8,7 +8,7 @@ from tqdm import tqdm
 from attacks.pgd_attacks.PGDTrim import PGDTrim
 from attacks.geoattack import GeoAttackPGDTrim, GeoCLIPPredictor, GeoLocationLoss, haversine_distance, GeoAttackPGDTrimKernel
 from sparse_rs.util import CONTINENT_R, STREET_R
-from data.Im2GPS.download import load_places365_categories
+from data.Im2GPS3k.download import load_places365_categories
 from transformers import CLIPProcessor
 
 def find_nearest_neighbor_index(gps_gallery, coord):
