@@ -68,7 +68,9 @@ class RSAttack():
             resample_loc=None,
             data_loader=None,
             update_loc_period=None,
-            geoclip_attack=False
+            geoclip_attack=False,
+            mask_failed=False,
+            early_stop_fool=False
             ):
         """
         Sparse-RS implementation in PyTorch
@@ -93,6 +95,8 @@ class RSAttack():
         self.data_loader = data_loader
         self.update_loc_period = update_loc_period if not update_loc_period is None else 4 if not targeted else 10
         self.geoclip_attack = geoclip_attack
+        self.mask_failed = mask_failed
+        self.early_stop_fool = early_stop_fool
     
     def margin_and_loss(self, x, y):
         """
@@ -963,9 +967,8 @@ class RSAttack():
         """
         # print(f"start pertub: {y}")
         self.init_hyperparam(x)
-
-        adv = x.clone()
         qr = torch.zeros([x.shape[0]]).to(self.device)
+        adv = x.clone()
         if y is None:
             if not self.targeted:
                 with torch.no_grad():
@@ -985,26 +988,28 @@ class RSAttack():
                 y = y.detach().clone().long().to(self.device)
 
         # print(f"y before if self.geoclip_attack: # distance: {y}")
-
-        if self.geoclip_attack: # distance
-            # print(f"x.shape: {x.shape}")
-            if x.dim() == 5 and x.size(1) == 1:
-                x = x.squeeze(1)
-            if not self.targeted:
-                acc = haversine_distance(self.predict(x), y) <= CONTINENT_R
-            else:
-                acc = haversine_distance(self.predict(x), y) > STREET_R
-        else: # classes
-            if not self.targeted:
-                acc = self.predict(x).max(1)[1] == y
-            else:
-                acc = self.predict(x).max(1)[1] != y
+        if self.early_stop_fool == True:
+            if self.geoclip_attack: # distance
+                # print(f"x.shape: {x.shape}")
+                if x.dim() == 5 and x.size(1) == 1:
+                    x = x.squeeze(1)
+                if not self.targeted:
+                    acc = haversine_distance(self.predict(x), y) <= CONTINENT_R
+                else:
+                    acc = haversine_distance(self.predict(x), y) > STREET_R
+            else: # classes
+                if not self.targeted:
+                    acc = self.predict(x).max(1)[1] == y
+                else:
+                    acc = self.predict(x).max(1)[1] != y
+        else:
+            acc = torch.ones(x.shape[0], dtype=torch.bool, device=x.device)
 
         startt = time.time()
 
-        torch.random.manual_seed(self.seed)
-        torch.cuda.random.manual_seed(self.seed)
-        np.random.seed(self.seed)
+        # torch.random.manual_seed(self.seed)
+        # torch.cuda.random.manual_seed(self.seed)
+        # np.random.seed(self.seed)
         
         for counter in range(self.n_restarts):
             ind_to_fool = acc.nonzero().squeeze()
@@ -1019,35 +1024,36 @@ class RSAttack():
                 # print(f"starting attack_single_run, y_to_fool: {y_to_fool}")
                 qr_curr, adv_curr = self.attack_single_run(x_to_fool, y_to_fool)
                 # print("finished attack_single_run")
-
-                # adv[ind_to_fool] = adv_curr.clone()
-                # qr[ind_to_fool] = qr_curr.clone()
-
-                output_curr = self.predict(adv_curr)
-                if self.geoclip_attack: # distance
-                    if not self.targeted:
-                        acc_curr = haversine_distance(output_curr, y_to_fool) <= CONTINENT_R
-                    else:
-                        acc_curr = haversine_distance(output_curr, y_to_fool) > STREET_R
-                else: # classes
-                    if not self.targeted:
-                        acc_curr = output_curr.max(1)[1] == y_to_fool
-                    else:
-                        acc_curr = output_curr.max(1)[1] != y_to_fool
-
-
-                ind_curr = (acc_curr == 0).nonzero().squeeze()
-
-                acc[ind_to_fool[ind_curr]] = 0 #indecies in acc that were fooled are set to 0
+                if not self.mask_failed:
+                    adv[ind_to_fool] = adv_curr.clone()
+                    qr[ind_to_fool] = qr_curr.clone()
                 
-                adv[ind_to_fool[ind_curr]] = adv_curr[ind_curr].clone()
-                qr[ind_to_fool[ind_curr]] = qr_curr[ind_curr].clone()
-                
-                if self.verbose:
-                    print('restart {} - robust accuracy: {:.2%}'.format(
-                        counter, acc.float().mean()),
-                        '- cum. time: {:.1f} s'.format(
-                        time.time() - startt))
+                else:
+                    output_curr = self.predict(adv_curr)
+                    if self.geoclip_attack: # distance
+                        if not self.targeted:
+                            acc_curr = haversine_distance(output_curr, y_to_fool) <= CONTINENT_R
+                        else:
+                            acc_curr = haversine_distance(output_curr, y_to_fool) > STREET_R
+                    else: # classes
+                        if not self.targeted:
+                            acc_curr = output_curr.max(1)[1] == y_to_fool
+                        else:
+                            acc_curr = output_curr.max(1)[1] != y_to_fool
+
+
+                    ind_curr = (acc_curr == 0).nonzero().squeeze()
+
+                    acc[ind_to_fool[ind_curr]] = 0 #indecies in acc that were fooled are set to 0
+                    
+                    adv[ind_to_fool[ind_curr]] = adv_curr[ind_curr].clone()
+                    qr[ind_to_fool[ind_curr]] = qr_curr[ind_curr].clone()
+                    
+                    if self.verbose:
+                        print('restart {} - robust accuracy: {:.2%}'.format(
+                            counter, acc.float().mean()),
+                            '- cum. time: {:.1f} s'.format(
+                            time.time() - startt))
 
         return qr, adv
 

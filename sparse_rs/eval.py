@@ -2,6 +2,7 @@ import os
 import argparse
 import torch
 import numpy as np
+import math
 
 
 from geoclip.model.GeoCLIP import GeoCLIP
@@ -40,7 +41,11 @@ if __name__ == '__main__':
     # feature space attack k = number of features, 
     parser.add_argument('--k', default=150., type=float)
     parser.add_argument('--eps', default=150., type=float)
-    parser.add_argument('--overlap', action='store_true')
+    parser.add_argument('--mask_failed', action='store_true', help="masks failed patches between attacks")
+    parser.add_argument('--early_stop_fool', action='store_true', help="stops attacking images that were already fooled by the prevous patch")
+    parser.add_argument('--force_less_patches', action='store_true', help="Allow for only eps")
+    
+    # parser.add_argument('--overlap', action='store_true')
 
     parser.add_argument('--n_restarts', type=int, default=1) # Number of random restarts
     parser.add_argument('--loss', type=str, default='margin') # loss function for the attack, options: 'margin', 'ce'
@@ -64,7 +69,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='Im2GPS3k', choices=['Im2GPS', 'Im2GPS3k', 'YFCC26k', 'MP_16'])
     parser.add_argument('--save_dir', type=str, default='./results/new')
     parser.add_argument('--data_path', type=str, default="./data")
-    parser.add_argument('--max_images', type=int, default=1000, help='Maximum number of images to download for MP-16 dataset')
+    parser.add_argument('--max_images', type=int, default=75, help='Maximum number of images to download for MP-16 dataset')
 
 
     parser.add_argument('--device', type=str, default='cuda')
@@ -72,11 +77,23 @@ if __name__ == '__main__':
     
     args = parser.parse_args()
     
-    args.eps = args.k + 0
+
+    
+    args.k = args.k + 0
     # args.bs = args.n_ex + 0
     args.p_init = args.alpha_init + 0.
     args.resample_loc = args.resample_period_univ
     args.update_loc_period = args.loc_update_period
+
+    if args.norm == "patches":
+        if args.eps % args.k != 0:
+            raise ValueError("filling all the patches should amount to eps! (eps % k == 0)")
+        if args.eps < args.k:
+            raise ValueError("k cannot be bigger than eps")
+        n_patches = int(args.eps // args.k)
+        args.n_queries = int(np.ceil(args.n_queries / n_patches))
+    else:
+        n_patches = 1
     
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -84,47 +101,42 @@ if __name__ == '__main__':
 
     device = torch.device( args.device if torch.cuda.is_available() else "cpu" )
     print("getting data")
-    if args.dataset == 'Im2GPS3k':
-        if args.model == 'clip':
-            x_test, y_test, y_test_geo = CLIP_load_data_tensor(args.data_path)
-        else: # geo clip
-            x_test, y_test = load_im2gps_data(args.data_path)
-        n_examples = y_test.shape[0]
-        args.n_ex = n_examples
-        print(f"ytest shape: P{y_test.shape}")
-        print(f"y_test: {y_test}")
+    
+    if args.model == 'clip':
+        x_test, y_test, y_test_geo = CLIP_load_data_tensor(args.data_path)
+    else: # geo clip
+        x_test, y_test = load_im2gps_data(args.data_path)
+    n_examples = y_test.shape[0]
+    args.n_ex = n_examples
 
-    elif args.dataset == 'YFCC26k':
-        pass
 
-    elif args.dataset == 'MP_16':
-        # Get transforms for preprocessing MP-16 images
-        transform = get_mp16_transforms(apply_transforms=True)
-        
-        # Load data with a limit on the number of images to download
-        print(f"Loading MP-16 dataset with max_images={args.max_images}")
-        x_list, y_list = load_mp16_data(args.data_path, max_images=args.max_images, transform=transform)
-        
-        # Convert image list to tensor
-        x_tensors = []
-        for img in x_list:
-            if not isinstance(img, torch.Tensor):
-                img = transform(img)
-            x_tensors.append(img)
-        
-        # Stack all images into a single tensor
-        x_test = torch.stack(x_tensors)
-        
-        # Convert coordinates list to tensor 
-        y_coords = []
-        for coords in y_list:
-            y_coords.append(torch.tensor(coords, dtype=torch.float32))
-        
-        y_test = torch.stack(y_coords)
-        
-        n_examples = len(x_test)
-        args.n_ex = min(args.n_ex, n_examples)
-        print("x_test shape: {}, y_test shape: {}".format(x_test.shape, y_test.shape))
+    # # Get transforms for preprocessing MP-16 images
+    # transform = get_mp16_transforms(apply_transforms=True)
+    
+    # # Load data with a limit on the number of images to download
+    # print(f"Loading MP-16 dataset with max_images={args.max_images}")
+    # x_list, y_list = load_mp16_data(args.data_path, max_images=args.max_images, transform=transform)
+    
+    # # Convert image list to tensor
+    # x_tensors = []
+    # for img in x_list:
+    #     if not isinstance(img, torch.Tensor):
+    #         img = transform(img)
+    #     x_tensors.append(img)
+    
+    # # Stack all images into a single tensor
+    # x_test = torch.stack(x_tensors)
+    
+    # # Convert coordinates list to tensor 
+    # y_coords = []
+    # for coords in y_list:
+    #     y_coords.append(torch.tensor(coords, dtype=torch.float32))
+    
+    # y_test = torch.stack(y_coords)
+    
+    # n_examples = len(x_test)
+    # args.n_ex = min(args.n_ex, n_examples)
+    # print("x_test shape: {}, y_test shape: {}".format(x_test.shape, y_test.shape))
         
 
 
@@ -160,9 +172,9 @@ if __name__ == '__main__':
     else:
         str_space = 'pixel space'
     
-    param_run = '{}_{}_{}_1_{}_nqueries_{:.0f}_pinit_{:.2f}_loss_{}_eps_{:.0f}_targeted_{}_targetclass_{}_seed_{:.0f}'.format(
+    param_run = '{}_{}_{}_1_{}_nqueries_{:.0f}_pinit_{:.2f}_loss_{}_eps_{:.0f}_k_{:.0f}_targeted_{}_targetclass_{}_seed_{:.0f}'.format(
         "sparse_rs", args.norm, args.model, args.n_ex, args.n_queries, args.p_init,
-        args.loss, args.eps, args.targeted, args.target_class, args.seed)
+        args.loss, args.eps, args.k, args.targeted, args.target_class, args.seed)
     if args.constant_schedule:
         param_run += '_constantpinit'
     if args.use_feature_space:
@@ -187,30 +199,28 @@ if __name__ == '__main__':
 
     if args.model.lower() == "geoclip":
         from sparse_rs.attack_sparse_rs import AttackGeoCLIP
-        adversary = AttackGeoCLIP(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
+        adversary = AttackGeoCLIP(model, norm=args.norm, eps=int(args.k), verbose=True, n_queries=args.n_queries,
             p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
             loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
-            data_loader=data_loader, resample_loc=args.resample_loc,device=device, geoclip_attack=True, y_test=y_test)
+            data_loader=data_loader, resample_loc=args.resample_loc,device=device, geoclip_attack=True, y_test=y_test, mask_failed=args.mask_failed)
     elif args.model.lower() == "clip":
         from sparse_rs.attack_sparse_rs import AttackCLIP
-        adversary = AttackCLIP(model, data_path=args.data_path, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
+        adversary = AttackCLIP(model, data_path=args.data_path, norm=args.norm, eps=int(args.k), verbose=True, n_queries=args.n_queries,
             p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
             loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
-            data_loader=data_loader, resample_loc=args.resample_loc,device=device)
+            data_loader=data_loader, resample_loc=args.resample_loc,device=device, mask_failed=args.mask_failed)
     else:
         from rs_attacks import RSAttack
-        adversary = RSAttack(model, norm=args.norm, eps=int(args.eps), verbose=True, n_queries=args.n_queries,
+        adversary = RSAttack(model, norm=args.norm, eps=int(args.k), verbose=True, n_queries=args.n_queries,
             p_init=args.p_init, log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run),
             loss=args.loss, targeted=args.targeted, seed=args.seed, constant_schedule=args.constant_schedule,
-            data_loader=data_loader, resample_loc=args.resample_loc, device=device)
+            data_loader=data_loader, resample_loc=args.resample_loc, device=device, mask_failed=args.mask_failed)
         
     
     
 
     bs = args.bs
     n_batches = int(np.ceil(n_examples / bs))
-    adv_complete = x_test.clone()
-    qr_complete = torch.zeros([x_test.shape[0]]).cpu()
     pred = torch.zeros([0]).float().cpu()
     print("starting clean classification")
     distances_clean = []
@@ -257,47 +267,62 @@ if __name__ == '__main__':
             ind_to_fool = (pred == 1).nonzero().squeeze()
         
         # run the attack
+        adv_complete = x_test.clone()
+        qr_complete = torch.zeros([x_test.shape[0]]).cpu()
+        acc_curr = torch.zeros([0]).float().cpu()
         pred_adv = pred.clone()
-        for batch_idx in range(n_batches):
-            start_idx = batch_idx * bs
-            end_idx = min((batch_idx + 1) * bs, n_examples)
-            # print(f"y_test{y_test}")
-            x_curr = x_test[ind_to_fool[start_idx:end_idx]].clone().detach().to(device)
-            y_curr = y_test[ind_to_fool[start_idx:end_idx]].clone().detach().to(device)
-            # print(f"y_curr{y_curr}")
-            qr_curr, adv = adversary.perturb(x_curr, y_curr)
-            adv = adv.to(device)
+        for _ in  range(n_patches):
+            # temp = adv_complete.clone()
+            for batch_idx in range(n_batches):
+                start_idx = batch_idx * bs
+                end_idx = min((batch_idx + 1) * bs, n_examples)
+                # print(f"y_test{y_test}")
+                x_curr = adv_complete[ind_to_fool[start_idx:end_idx]].clone().detach().to(device)
+                y_curr = y_test[ind_to_fool[start_idx:end_idx]].clone().detach().to(device)
+                # print(f"y_curr{y_curr}")
+                qr_curr, adv = adversary.perturb(x_curr, y_curr)
+                # adv = adv.to(device)
+                
+                adv_complete[ind_to_fool[start_idx:end_idx]] = adv.cpu().clone() # adv examples
+                qr_complete[ind_to_fool[start_idx:end_idx]] += qr_curr.cpu().clone() # amount of queries
 
-            if args.model.lower() != "geoclip":
-                output = model(adv)
-                if not args.targeted:
-                    acc_curr = (output.max(1)[1] == y_curr).float().cpu()
-                else:
-                    acc_curr = (output.max(1)[1] != y_curr).float().cpu()
-            else:
-                output, _ = model.predict_from_tensor(adv)
-                dists = haversine_distance(output, y_curr)
-                if not args.targeted:
-                    acc_curr = (dists <= CONTINENT_R).float().cpu()
-                else:
-                    acc_curr = (dists > STREET_R).float().cpu()
+                # if args.model.lower() != "geoclip":
+                #     output = model(adv)
+                #     if not args.targeted:
+                #         acc_curr = (output.max(1)[1] == y_curr).float().cpu()
+                #         # acc_curr = torch.cat((acc_curr, (output.max(1)[1] == y_curr).float().cpu()), dim=0)
+                #     else:
+                #         acc_curr = (output.max(1)[1] != y_curr).float().cpu()
+                #         # acc_curr = torch.cat((acc_curr, (output.max(1)[1] != y_curr).float().cpu()), dim=0)
+                # else:
+                #     output, _ = model.predict_from_tensor(adv)
+                #     dists = haversine_distance(output, y_curr)
+                #     if not args.targeted:
+                #         acc_curr = (dists <= CONTINENT_R).float().cpu()
+                #         # acc_curr = torch.cat((acc_curr, (dists <= CONTINENT_R).float().cpu()), dim=0)
+                #     else:
+                #         acc_curr = (dists > STREET_R).float().cpu()
+                #         # acc_curr = torch.cat((acc_curr,  (dists > STREET_R).float().cpu()), dim=0)
+
+
+                # pred_adv[ind_to_fool[start_idx:end_idx]] = acc_curr.clone() # mask of successful predictions under adv (robust)
+                # adv_complete[ind_to_fool[start_idx:end_idx]] = adv.cpu().clone() # adv examples
+                # qr_complete[ind_to_fool[start_idx:end_idx]] = qr_curr.cpu().clone() # amount of queries
+                
+                # print('batch {}/{} - {:.0f} of {} successfully perturbed'.format(
+                #     batch_idx + 1, n_batches, x_curr.shape[0] - acc_curr.sum(), x_curr.shape[0]))
+                
+                del x_curr
+                del y_curr
+                del adv
+                del qr_curr
+                # del acc_curr
+                torch.cuda.empty_cache()
+
+            # print(adv_complete - temp)
 
             
-            pred_adv[ind_to_fool[start_idx:end_idx]] = acc_curr.clone() # mask of successful predictions under adv (robust)
-            adv_complete[ind_to_fool[start_idx:end_idx]] = adv.cpu().clone() # adv examples
-            qr_complete[ind_to_fool[start_idx:end_idx]] = qr_curr.cpu().clone() # amount of queries
-            
-            print('batch {}/{} - {:.0f} of {} successfully perturbed'.format(
-                batch_idx + 1, n_batches, x_curr.shape[0] - acc_curr.sum(), x_curr.shape[0]))
-            
-            del x_curr
-            del y_curr
-            del adv
-            del qr_curr
-            del acc_curr
-            torch.cuda.empty_cache()
-            
-        adversary.logger.log('robust accuracy {:.2%}'.format(pred_adv.float().mean()))
+        # adversary.logger.log('robust accuracy {:.2%}'.format(pred_adv.float().mean()))
         
         # check robust accuracy and other statistics
         acc = 0.
@@ -344,6 +369,7 @@ if __name__ == '__main__':
             distances_adv = torch.cat(distances_adv)
             adversary.logger.log("GeoCLIP attack stats")
             adversary.logger.log("--------------------")
+            adversary.logger.log('robust accuracy {:.2%}'.format(acc / args.n_ex))
             targeted_srt = f"targeted location: {args.target_class}"
             untargeted_srt = f"true location of the examples"
             adversary.logger.log(f"The following logs are relative to the location of the {targeted_srt if args.targeted else untargeted_srt}")
@@ -505,7 +531,7 @@ if __name__ == '__main__':
             # to easily apply the frame to new images
             ind_img = (res > 0).nonzero().squeeze()[0]
             mask = torch.zeros(x_test.shape[-2:])
-            s = int(args.eps)
+            s = int(args.k)
             mask[:s] = 1.
             mask[-s:] = 1.
             mask[:, :s] = 1.

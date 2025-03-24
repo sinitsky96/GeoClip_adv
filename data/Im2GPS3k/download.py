@@ -38,11 +38,8 @@ def download_data(data_dir):
     Run the shell scripts to download them if they are missing.
     """
     Im2GPS3k_path = os.path.join(data_dir, 'Im2GPS3k')
-    images_path = os.path.join(Im2GPS3k_path, 'images')
     csv_path_1 = os.path.join(Im2GPS3k_path, 'im2gps3k_places365.csv')
     sample_path = os.path.join(Im2GPS3k_path, SAMPLED_CSV)
-    csv_path_2 = os.path.join(Im2GPS3k_path, 'im2gps_places365.csv')
-    download_images_path = os.path.join(Im2GPS3k_path, 'download_images.sh')
     download_csv_path = os.path.join(Im2GPS3k_path, 'download_csv.sh')
 
     # if not os.path.exists(images_path):
@@ -66,7 +63,7 @@ def sample_kmeans(csv_path, save_path):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    k = 200
+    k = 75
     kmeans = KMeans(n_clusters=k, random_state=42)
     kmeans.fit(X_scaled)
 
