@@ -8,6 +8,7 @@ import math
 from geoclip.model.GeoCLIP import GeoCLIP
 from data.Im2GPS3k.download import load_im2gps_data, CLIP_load_data_tensor
 from data.MP_16.download import load_mp16_data, get_transforms as get_mp16_transforms
+from data.mixed_dataset.download import get_mixed_dataloader, get_transforms as get_mixed_transforms
 
 from sparse_rs.attack_sparse_rs import AttackGeoCLIP, ClipWrap
 from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R, CITY_R, REGION_R, COUNTRY_R 
@@ -66,10 +67,15 @@ if __name__ == '__main__':
     parser.add_argument('--target_class', type=eval)
 
     parser.add_argument('--model', default='geoclip', type=str)
-    parser.add_argument('--dataset', type=str, default='Im2GPS3k', choices=['Im2GPS', 'Im2GPS3k', 'YFCC26k', 'MP_16'])
+    parser.add_argument('--dataset', type=str, default='Im2GPS3k', choices=['Im2GPS', 'Im2GPS3k', 'YFCC26k', 'MP_16', 'mixed'])
     parser.add_argument('--save_dir', type=str, default='./results/new')
     parser.add_argument('--data_path', type=str, default="./data")
+<<<<<<< HEAD
     parser.add_argument('--max_images', type=int, default=75, help='Maximum number of images to download for MP-16 dataset')
+=======
+    parser.add_argument('--max_images', type=int, default=1000, help='Maximum number of images to download for MP-16 dataset')
+    parser.add_argument('--samples_per_dataset', type=int, default=75, help='Number of samples to take from each dataset for mixed dataset')
+>>>>>>> 25771ae730fbf195c1980392224ed10fba1afc11
 
 
     parser.add_argument('--device', type=str, default='cuda')
@@ -139,6 +145,32 @@ if __name__ == '__main__':
     # print("x_test shape: {}, y_test shape: {}".format(x_test.shape, y_test.shape))
         
 
+    elif args.dataset == 'mixed':
+        # Get transforms for preprocessing images
+        transform = get_mixed_transforms()
+        
+        # Load data using the mixed dataset dataloader
+        print(f"Loading mixed dataset with {args.samples_per_dataset} samples per dataset")
+        dataloader = get_mixed_dataloader(
+            args.data_path,
+            batch_size=args.bs,
+            samples_per_dataset=args.samples_per_dataset,
+            transform=transform
+        )
+        
+        # Convert dataloader to tensors
+        x_tensors = []
+        y_tensors = []
+        for x, y in dataloader:
+            x_tensors.append(x)
+            y_tensors.append(y)
+        
+        x_test = torch.cat(x_tensors, dim=0)
+        y_test = torch.cat(y_tensors, dim=0)
+        
+        n_examples = len(x_test)
+        args.n_ex = min(args.n_ex, n_examples)
+        print("x_test shape: {}, y_test shape: {}".format(x_test.shape, y_test.shape))
 
     if args.model.lower() == "geoclip":
         model = GeoCLIP()
