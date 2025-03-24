@@ -56,6 +56,8 @@ def download_data(data_dir):
 
     if not os.path.exists(sample_path):
         sample_kmeans(csv_path_1, sample_path)
+        
+    return Im2GPS3k_path, images_path, csv_path_1, csv_path_2
 
 def sample_kmeans(csv_path, save_path):
     df = pd.read_csv(csv_path)
