@@ -36,10 +36,11 @@ if __name__ == '__main__':
 
     parser.add_argument('--norm', type=str, default='L0') # type of the attack : 'L0', 'patches', 'frames', 'patches_universal', 'frames_universal'
     
-    # pixel attack k = number of pixels, 
+    # pixel attack k = number of pixels, in patch the width of the patch is sqrt(k) 
     # feature space attack k = number of features, 
-    # image-specific frames of width (patch) k, k = frame width
     parser.add_argument('--k', default=150., type=float)
+    parser.add_argument('--eps', default=150., type=float)
+    parser.add_argument('--overlap', action='store_true')
 
     parser.add_argument('--n_restarts', type=int, default=1) # Number of random restarts
     parser.add_argument('--loss', type=str, default='margin') # loss function for the attack, options: 'margin', 'ce'
