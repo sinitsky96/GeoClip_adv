@@ -71,9 +71,6 @@ def download_data(data_dir):
             os.chdir(cwd)
         else:
             print(f"Warning: Download script not found at {script_path}")
-
-    sampled_path_save = os.path.join(mp16_path, 'sampled_data.csv')
-    sample_kmeans(places_csv_path, sampled_path_save)
     
     # Download URLs CSV if needed
     if not os.path.exists(urls_csv_path):
@@ -91,7 +88,7 @@ def download_data(data_dir):
         else:
             print(f"Warning: Download script not found at {script_path}")
     
-    return mp16_path, images_path, places_csv_path, urls_csv_path, sampled_path_save
+    return mp16_path, images_path, places_csv_path, urls_csv_path
 
 def download_image(args):
     """
@@ -126,7 +123,7 @@ def download_image(args):
         # Silently fail - some URLs are expected to be unavailable
         return False
 
-def download_images_from_urls(urls_csv_path, images_path, sampled_path_save, max_images=None, num_workers=8):
+def download_images_from_urls(urls_csv_path, images_path, max_images=None, num_workers=8):
     """
     Download images from URLs listed in the CSV file
     
@@ -141,9 +138,6 @@ def download_images_from_urls(urls_csv_path, images_path, sampled_path_save, max
     """
     # Load URLs CSV
     df = pd.read_csv(urls_csv_path, header=None, names=['IMG_PATH', 'URL'])
-    df_sampled = pd.read_csv(urls_csv_path)
-    df_sampled['IMG_PATH'] = df_sampled['IMG_ID'].apply(lambda x: x.replace('/', '_'))
-
     print(f"Found {len(df)} images in URLs file")
     print(f"CSV columns: {df.columns.tolist()}")
     
@@ -200,7 +194,7 @@ def merge_csv_data(places_csv_path, available_images, output_path):
     
     return filtered_df
 
-def sample_kmeans(csv_path, save_path, n_samples=75):
+def sample_kmeans(csv_path, save_path, n_samples=200):
     """
     Sample a subset of the dataset using KMeans clustering on geographic coordinates.
     This helps to get a diverse set of locations while keeping the dataset size manageable.
@@ -327,27 +321,25 @@ def load_mp16_data(data_dir, max_images=1000, transform=None, sample_size=None):
         y_list: List of coordinates
     """
     # Ensure CSV data is available and get paths
-    mp16_path, images_path, places_csv_path, urls_csv_path, sampled_path_save = download_data(data_dir)
+    mp16_path, images_path, places_csv_path, urls_csv_path = download_data(data_dir)
     
     # Download images from URLs (if needed)
     available_images = download_images_from_urls(
-        urls_csv_path, images_path, sampled_path_save, max_images=max_images)
+        urls_csv_path, images_path, max_images=max_images)
     
     if not available_images:
         raise ValueError("No images could be downloaded. Please check your internet connection.")
     
     # Create filtered CSV with only available images
-    # filtered_csv_path = os.path.join(mp16_path, "mp16_filtered.csv")
-    # filtered_df = merge_csv_data(places_csv_path, available_images, filtered_csv_path)
+    filtered_csv_path = os.path.join(mp16_path, "mp16_filtered.csv")
+    filtered_df = merge_csv_data(places_csv_path, available_images, filtered_csv_path)
     
     # Sample dataset if requested
-    # csv_path = filtered_csv_path
-    # if sample_size and sample_size < len(filtered_df):
-    #     sampled_csv_path = os.path.join(mp16_path, SAMPLED_CSV)
-    #     sample_kmeans(filtered_csv_path, sampled_csv_path, n_samples=sample_size)
-    #     csv_path = sampled_csv_path
-
-    csv_path = sampled_path_save
+    csv_path = filtered_csv_path
+    if sample_size and sample_size < len(filtered_df):
+        sampled_csv_path = os.path.join(mp16_path, SAMPLED_CSV)
+        sample_kmeans(filtered_csv_path, sampled_csv_path, n_samples=sample_size)
+        csv_path = sampled_csv_path
     
     # Load data
     transform_fn = transform if transform else get_transforms()
@@ -379,86 +371,6 @@ def load_mp16_data(data_dir, max_images=1000, transform=None, sample_size=None):
                 image = transform_fn(image)
                 
             x_list.append(image)
-            y_list.append([lat, lon])
-            
-        except Exception as e:
-            print(f"Error loading image {img_path}: {e}")
-            # Skip this image
-            continue
-    
-    print(f"Loaded {len(x_list)} images from MP-16 dataset")
-    return x_list, y_list
-
-def load_mp16_data_clip(data_dir, max_images=1000, transform=None, sample_size=None):
-    """
-    Load the MP-16 dataset.
-    
-    Args:
-        data_dir: Root directory of the dataset
-        max_images: Maximum number of images to download (None for all)
-        transform: Optional transforms to apply to images
-        sample_size: If provided, samples a smaller dataset using KMeans
-        
-    Returns:
-        x_list: List of images
-        y_list: List of coordinates
-    """
-    # Ensure CSV data is available and get paths
-    mp16_path, images_path, places_csv_path, urls_csv_path, sampled_path_save = download_data(data_dir)
-    
-    # Download images from URLs (if needed)
-    available_images = download_images_from_urls(
-        urls_csv_path, images_path, sampled_path_save, max_images=max_images)
-    
-    if not available_images:
-        raise ValueError("No images could be downloaded. Please check your internet connection.")
-    
-    # Create filtered CSV with only available images
-    # filtered_csv_path = os.path.join(mp16_path, "mp16_filtered.csv")
-    # filtered_df = merge_csv_data(places_csv_path, available_images, filtered_csv_path)
-    
-    # Sample dataset if requested
-    # csv_path = filtered_csv_path
-    # if sample_size and sample_size < len(filtered_df):
-    #     sampled_csv_path = os.path.join(mp16_path, SAMPLED_CSV)
-    #     sample_kmeans(filtered_csv_path, sampled_csv_path, n_samples=sample_size)
-    #     csv_path = sampled_csv_path
-
-    csv_path = sampled_path_save
-    
-    # Load data
-    transform_fn = transform if transform else get_transforms()
-    
-    # Prepare data lists
-    x_list = []
-    y_list = []
-    clip_labels=[]
-    
-    # Load each image
-    for _, row in tqdm(pd.read_csv(csv_path).iterrows(), desc="Loading images"):
-        image_file = row["IMG_ID"]
-        class_id = row["S365_Label"]
-        lat = row["LAT"]
-        lon = row["LON"]
-        
-        img_path = os.path.join(images_path, image_file)
-        
-        if not os.path.exists(img_path):
-            continue
-        
-        try:
-            image = Image.open(img_path).convert("RGB")
-            
-            # Handle multiple frames if needed
-            if getattr(image, "n_frames", 1) > 1:
-                image.seek(0)
-                
-            # Apply transform if image loaded successfully
-            if transform_fn:
-                image = transform_fn(image)
-                
-            x_list.append(image)
-            clip_labels.append(class_id)
             y_list.append([lat, lon])
             
         except Exception as e:

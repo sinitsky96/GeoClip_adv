@@ -44,7 +44,6 @@ if __name__ == '__main__':
     parser.add_argument('--eps', default=150., type=float)
     parser.add_argument('--mask_failed', action='store_true', help="masks failed patches between attacks")
     parser.add_argument('--early_stop_fool', action='store_true', help="stops attacking images that were already fooled by the prevous patch")
-    parser.add_argument('--force_less_patches', action='store_true', help="Allow for only eps")
     
     # parser.add_argument('--overlap', action='store_true')
 
@@ -70,12 +69,8 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='Im2GPS3k', choices=['Im2GPS', 'Im2GPS3k', 'YFCC26k', 'MP_16', 'mixed'])
     parser.add_argument('--save_dir', type=str, default='./results/new')
     parser.add_argument('--data_path', type=str, default="./data")
-<<<<<<< HEAD
-    parser.add_argument('--max_images', type=int, default=75, help='Maximum number of images to download for MP-16 dataset')
-=======
     parser.add_argument('--max_images', type=int, default=1000, help='Maximum number of images to download for MP-16 dataset')
     parser.add_argument('--samples_per_dataset', type=int, default=75, help='Number of samples to take from each dataset for mixed dataset')
->>>>>>> 25771ae730fbf195c1980392224ed10fba1afc11
 
 
     parser.add_argument('--device', type=str, default='cuda')
@@ -108,56 +103,33 @@ if __name__ == '__main__':
     device = torch.device( args.device if torch.cuda.is_available() else "cpu" )
     print("getting data")
     
-    if args.model == 'clip':
-        x_test, y_test, y_test_geo = CLIP_load_data_tensor(args.data_path)
-    else: # geo clip
-        x_test, y_test = load_im2gps_data(args.data_path)
-    n_examples = y_test.shape[0]
-    args.n_ex = n_examples
 
-
-    # # Get transforms for preprocessing MP-16 images
-    # transform = get_mp16_transforms(apply_transforms=True)
+    transform = get_mixed_transforms()
     
-    # # Load data with a limit on the number of images to download
-    # print(f"Loading MP-16 dataset with max_images={args.max_images}")
-    # x_list, y_list = load_mp16_data(args.data_path, max_images=args.max_images, transform=transform)
+    # Load data using the mixed dataset dataloader
+    print(f"Loading mixed dataset with {args.samples_per_dataset} samples per dataset")
+    dataloader = get_mixed_dataloader(
+        args.data_path,
+        batch_size=args.bs,
+        samples_per_dataset=args.samples_per_dataset,
+        transform=transform,
+        clip_varient=True if args.model.lower() == 'clip' else False
+    )
     
-    # # Convert image list to tensor
-    # x_tensors = []
-    # for img in x_list:
-    #     if not isinstance(img, torch.Tensor):
-    #         img = transform(img)
-    #     x_tensors.append(img)
-    
-    # # Stack all images into a single tensor
-    # x_test = torch.stack(x_tensors)
-    
-    # # Convert coordinates list to tensor 
-    # y_coords = []
-    # for coords in y_list:
-    #     y_coords.append(torch.tensor(coords, dtype=torch.float32))
-    
-    # y_test = torch.stack(y_coords)
-    
-    # n_examples = len(x_test)
-    # args.n_ex = min(args.n_ex, n_examples)
-    # print("x_test shape: {}, y_test shape: {}".format(x_test.shape, y_test.shape))
+    if args.model.lower() == 'clip':
+        # Convert dataloader to tensors
+        x_tensors = []
+        y_tensors = []
+        labels = []
+        for x, y, label in dataloader:
+            x_tensors.append(x)
+            y_tensors.append(y)
+            labels.append(label)
         
-
-    elif args.dataset == 'mixed':
-        # Get transforms for preprocessing images
-        transform = get_mixed_transforms()
-        
-        # Load data using the mixed dataset dataloader
-        print(f"Loading mixed dataset with {args.samples_per_dataset} samples per dataset")
-        dataloader = get_mixed_dataloader(
-            args.data_path,
-            batch_size=args.bs,
-            samples_per_dataset=args.samples_per_dataset,
-            transform=transform
-        )
-        
+        x_test = torch.cat(x_tensors, dim=0)
+        y_test = torch.cat(labels, dim=0)
+        y_test_geo = torch.cat(y_tensors, dim=0)
+    else:
         # Convert dataloader to tensors
         x_tensors = []
         y_tensors = []
@@ -167,10 +139,13 @@ if __name__ == '__main__':
         
         x_test = torch.cat(x_tensors, dim=0)
         y_test = torch.cat(y_tensors, dim=0)
-        
-        n_examples = len(x_test)
-        args.n_ex = min(args.n_ex, n_examples)
-        print("x_test shape: {}, y_test shape: {}".format(x_test.shape, y_test.shape))
+    
+    n_examples = len(x_test)
+    args.n_ex = min(args.n_ex, n_examples)
+    print("x_test shape: {}, y_test shape: {}".format(x_test.shape, y_test.shape))
+
+
+
 
     if args.model.lower() == "geoclip":
         model = GeoCLIP()

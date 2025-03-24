@@ -87,13 +87,14 @@ class MixedDataset(Dataset):
       - Loads images from the respective directories.
       - Returns (transformed_image, (lat, lon)).
     """
-    def __init__(self, data_dir, csv_path, transform=None):
+    def __init__(self, data_dir, csv_path, clip_varient, transform=None):
         super().__init__()
         self.transform = transform if transform else get_transforms()
         
         # Store paths to both datasets
         self.im2gps_dir = os.path.join(data_dir, 'Im2GPS3k', 'images')
         self.mp16_dir = os.path.join(data_dir, 'MP_16', 'images')
+        self.clip_varient = clip_varient
         
         self.data = pd.read_csv(csv_path)
         
@@ -122,6 +123,7 @@ class MixedDataset(Dataset):
         image_file = row["IMG_ID"]
         lat = row["LAT"]
         lon = row["LON"]
+        places365_label = row["S365_Label"]
         
         # Full path to the image
         img_path = os.path.join(
@@ -141,7 +143,9 @@ class MixedDataset(Dataset):
                 image = self.transform(image)
                 
             target = torch.tensor([lat, lon], dtype=torch.float)
-            
+            if self.clip_varient:
+                label = torch.tensor(places365_label)
+                return image, target, label
             # Return (image, (lat, lon))
             return image, target
             
@@ -209,7 +213,7 @@ def create_mixed_dataset(data_dir, samples_per_dataset=75):
     
     return mixed_df
 
-def get_mixed_dataloader(data_dir, batch_size, samples_per_dataset=75,
+def get_mixed_dataloader(data_dir, batch_size, clip_varient=False, samples_per_dataset=75,
                         transform=None, shuffle=True, num_workers=2):
     """
     Get a DataLoader for the mixed dataset.
@@ -223,7 +227,8 @@ def get_mixed_dataloader(data_dir, batch_size, samples_per_dataset=75,
     dataset = MixedDataset(
         data_dir=data_dir,
         csv_path=csv_path,
-        transform=transform
+        transform=transform,
+        clip_varient=clip_varient
     )
     
     # Create dataloader
