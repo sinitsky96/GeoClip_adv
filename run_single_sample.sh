@@ -23,7 +23,7 @@ export MAX_ROWS=100  # Use just 100 rows for testing
 cd /home/sinitsky96/project/GeoClip_adv
 
 # Untargeted L0 attack with sparse patches on a single sample
-$PYTHON ./SparsePatches/eval.py --attack_type sparse --model geoclip --norm L0 --bs 1 --n_ex 1 --sparsity 500 --eps_l_inf 0.1 --n_restarts 3 --n_iter 50 --device cuda --dataset MP_16 --max_images 20
+$PYTHON ./SparsePatches/eval.py --attack_type kernel --kernel_size 4 --model geoclip --norm L0 --bs 1 --n_ex 1  --eps_l_inf 0.1 --n_restarts 2 --n_iter 50 --device cuda --dataset MP_16 --max_images 10
 
 # The above runs with:
 # - Only 1 example (--n_ex 1)

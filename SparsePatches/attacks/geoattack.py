@@ -343,17 +343,19 @@ class GeoAttackPGDTrim(PGDTrim):
                             pert_flat = curr_pert[i].view(channels, -1)
                             pert_abs = pert_flat.abs().sum(dim=0)  # Sum across channels
                             
-                            # Keep only top-k perturbations
+                            # Keep only top-k perturbations based on L0 norm
                             _, indices = torch.topk(pert_abs, sparsity)
                             
                             # Create a mask to keep only top-k perturbations
                             mask = torch.zeros_like(pert_abs, dtype=torch.bool)
                             mask[indices] = True
                             
-                            # Apply mask
+                            # Apply mask and ensure L0 constraint
                             for c in range(channels):
                                 new_channel = torch.zeros_like(pert_flat[c])
                                 new_channel[mask] = pert_flat[c][mask]
+                                # Ensure L0 constraint by zeroing out small perturbations
+                                new_channel[new_channel.abs() < 1e-6] = 0
                                 curr_pert[i, c] = new_channel.view(height, width)
                         
                         # Update best perturbation
@@ -574,17 +576,19 @@ class GeoAttackPGDTrimKernel(PGDTrimKernel):
                             pert_flat = curr_pert[i].view(channels, -1)
                             pert_abs = pert_flat.abs().sum(dim=0)  # Sum across channels
                             
-                            # Keep only top-k perturbations
+                            # Keep only top-k perturbations based on L0 norm
                             _, indices = torch.topk(pert_abs, sparsity)
                             
                             # Create a mask to keep only top-k perturbations
                             mask = torch.zeros_like(pert_abs, dtype=torch.bool)
                             mask[indices] = True
                             
-                            # Apply mask
+                            # Apply mask and ensure L0 constraint
                             for c in range(channels):
                                 new_channel = torch.zeros_like(pert_flat[c])
                                 new_channel[mask] = pert_flat[c][mask]
+                                # Ensure L0 constraint by zeroing out small perturbations
+                                new_channel[new_channel.abs() < 1e-6] = 0
                                 curr_pert[i, c] = new_channel.view(height, width)
                         
                         # Update best perturbation

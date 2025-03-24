@@ -41,7 +41,7 @@ class AttackGeoCLIP_SparsePatches:
     For untargeted attacks, the goal is to push the predicted GPS coordinates far from the ground-truth.
     For targeted attacks, the goal is to make the model predict a specific target location.
     """
-    def __init__(self, model, norm='L0', sparsity=100, eps_l_inf=0.03, n_iter=40, 
+    def __init__(self, model, norm='L0', sparsity=224, eps_l_inf=0.03, n_iter=40, 
                  n_restarts=1, targeted=False, loss='margin', top_k=5, device='cuda',
                  verbose=True, seed=42, constant_schedule=False,
                  data_loader=None, resample_loc=None, log_path=None):
@@ -65,22 +65,14 @@ class AttackGeoCLIP_SparsePatches:
             targeted=targeted
         )
         
-        # Calculate total image pixels for proper decreasing sparsity
-        # This is critical: PGDTrim adds n_data_pixels at the beginning automatically
-        # so we need to exclude it from our trim_steps
-        total_pixels = 3 * 224 * 224  # 3 channels, 224x224 image
-        
-        # Configure PGDTrim attack with proper decreasing sparsity
-        # Start with decreasing sizes but DON'T include total_pixels (it's added automatically)
-        # Use more gradual trim steps
+        # Calculate total image pixels and trim steps according to the paper
+        total_pixels = 224 * 224  # Only count spatial dimensions (224x224)
         trim_steps = [
-            int(total_pixels / 2),            # 50% of pixels
-            int(total_pixels / 4),            # 25% of pixels
-            int(total_pixels / 8),            # 12.5% of pixels  
-            int(total_pixels / 16),           # 6.25% of pixels
-            int(total_pixels / 32),           # 3.125% of pixels
-            int(total_pixels / 64),           # 1.5% of pixels
-            sparsity                          # Final target sparsity
+            int(total_pixels / 8),    # 12.5% of pixels
+            int(total_pixels / 16),   # 6.25% of pixels
+            int(total_pixels / 32),   # 3.125% of pixels
+            int(total_pixels / 64),   # 1.5% of pixels
+            sparsity                  # Final target sparsity
         ]
         
         # Log initial setup
@@ -190,23 +182,19 @@ class AttackGeoCLIP_SparsePatches:
         y = y.to(output.device)
         distance = haversine_distance(output, y)
         
-        success = False
         if not self.targeted:
             margin = torch.sub(CONTINENT_R, distance)
             loss = -margin  # maximize distance (minimize negative distance)
-            # Check if attack is successful (distance > CONTINENT_R)
-            success = (distance > CONTINENT_R).any().item()
         else:
             margin = torch.sub(distance, STREET_R)
             loss = margin   # minimize distance
-            # Check if attack is successful (distance < STREET_R)
-            success = (distance < STREET_R).any().item()
-        
+            
         # Log loss and distance information
         if self.verbose and x.shape[0] == 1:  # Only log for single samples to avoid clutter
             mean_dist = distance.mean().item()
             mean_loss = loss.mean().item()
-            self.log(f"Distance: {mean_dist:.6f}, Loss: {mean_loss:.6f}, Success: {success}")
+            success = (distance > CONTINENT_R).any().item() if not self.targeted else (distance < STREET_R).any().item()
+            self.log(f"Distance: {mean_dist:.2f} km, Loss: {mean_loss:.6f}, Success: {success}")
             
         return loss
     
@@ -273,16 +261,16 @@ class AttackCLIP_SparsePatches:
         self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
         self.prompts = load_places365_categories(os.path.join(data_path, 'places365_cat.txt'))
         
-        # Calculate total image pixels for proper decreasing sparsity
-        # PGDTrim adds n_data_pixels at the beginning automatically
+        # Calculate total image pixels and trim steps according to the paper
         total_pixels = 3 * 224 * 224  # 3 channels, 224x224 image
-        
-        # Configure decreasing sparsity trim steps
         trim_steps = [
-            int(total_pixels / 4),            # 25% of pixels
-            int(total_pixels / 16),           # ~6% of pixels  
-            int(total_pixels / 64),           # ~1.5% of pixels
-            sparsity                          # Final target sparsity
+            int(total_pixels / 2),    # 50% of pixels
+            int(total_pixels / 4),    # 25% of pixels
+            int(total_pixels / 8),    # 12.5% of pixels
+            int(total_pixels / 16),   # 6.25% of pixels
+            int(total_pixels / 32),   # 3.125% of pixels
+            int(total_pixels / 64),   # 1.5% of pixels
+            sparsity                  # Final target sparsity
         ]
         
         misc_args = {
@@ -460,19 +448,25 @@ class AttackGeoCLIP_SparsePatches_Kernel:
             targeted=targeted
         )
         
-        # Calculate total image pixels for proper decreasing sparsity
-        # This is critical: PGDTrim adds n_data_pixels at the beginning automatically
-        # so we need to exclude it from our trim_steps
-        total_pixels = 3 * 224 * 224  # 3 channels, 224x224 image
-        
-        # Configure PGDTrim attack with proper decreasing sparsity
-        # Start with decreasing sizes but DON'T include total_pixels (it's added automatically)
+        # Calculate total image pixels and trim steps according to the paper
+        total_pixels = 224 * 224  # Only count spatial dimensions (224x224)
         trim_steps = [
-            int(total_pixels / 4),            # 25% of pixels
-            int(total_pixels / 16),           # ~6% of pixels  
-            int(total_pixels / 64),           # ~1.5% of pixels
-            sparsity                          # Final target sparsity
+            int(total_pixels / 8),    # 12.5% of pixels
+            int(total_pixels / 16),   # 6.25% of pixels
+            int(total_pixels / 32),   # 3.125% of pixels
+            int(total_pixels / 64),   # 1.5% of pixels
+            sparsity                  # Final target sparsity
         ]
+        
+        # For kernel attack, configure the kernel parameters
+        kernel_args = {
+            'kernel_size': kernel_size,  # Fixed 4x4 kernel
+            'n_kernel_pixels': kernel_size * kernel_size,  # 4x4 = 16 pixels per kernel
+            'kernel_sparsity': kernel_size * kernel_size,  # Allow all pixels in kernel to be active
+            'max_kernel_sparsity': kernel_size * kernel_size,  # Maximum sparsity per kernel
+            'kernel_min_active': 2,  # Minimum 2 active pixels per kernel
+            'kernel_group': 'pixels',  # Group pixels by kernels
+        }
         
         misc_args = {
             'device': device,
@@ -514,8 +508,8 @@ class AttackGeoCLIP_SparsePatches_Kernel:
         }
         
         trim_args = {
-            'sparsity': sparsity,
-            'trim_steps': trim_steps,
+            'sparsity': 16,  # Maximum sparsity per kernel (4x4)
+            'trim_steps': trim_steps,  # Use calculated trim steps
             'max_trim_steps': len(trim_steps),
             'trim_steps_reduce': 'none',
             'scale_dpo_mean': True,
@@ -536,16 +530,6 @@ class AttackGeoCLIP_SparsePatches_Kernel:
             'trim_best_mask': True
         }
         
-        # For kernel attack, configure the kernel parameters
-        kernel_args = {
-            'kernel_size': kernel_size,
-            'n_kernel_pixels': kernel_size * kernel_size,  # Total pixels in each kernel
-            'kernel_sparsity': kernel_sparsity,  # Number of active pixels per kernel
-            'max_kernel_sparsity': kernel_size * kernel_size,  # Maximum possible active pixels
-            'kernel_min_active': 1,  # Minimum active pixels per kernel
-            'kernel_group': 'pixels',  # Group pixels by kernels
-        }
-                
         # Create the GeoAttackPGDTrimKernel instance
         self.attack = GeoAttackPGDTrimKernel(
             model=model,
@@ -585,6 +569,13 @@ class AttackGeoCLIP_SparsePatches_Kernel:
             margin = torch.sub(distance, STREET_R)
             loss = margin   # minimize distance
             
+        # Log loss and distance information
+        if self.verbose and x.shape[0] == 1:  # Only log for single samples to avoid clutter
+            mean_dist = distance.mean().item()
+            mean_loss = loss.mean().item()
+            success = (distance > CONTINENT_R).any().item() if not self.targeted else (distance < STREET_R).any().item()
+            self.log(f"Step - Distance: {mean_dist:.2f} km, Loss: {mean_loss:.6f}, Success: {success}")
+            
         return loss
     
     def compute_ce_loss(self, x, y):
@@ -614,8 +605,39 @@ class AttackGeoCLIP_SparsePatches_Kernel:
         Returns:
             torch.Tensor: adversarial_examples
         """
+        print(f"\nStarting kernel-based attack with {self.sparsity} target sparsity...")
+        print(f"Input shape: {x.shape}, Target shape: {y.shape}")
+        print(f"Using device: {x.device}")
+        
+        # Get initial prediction
+        with torch.no_grad():
+            initial_output, _ = self.model.predict_from_tensor(x)
+            initial_distance = haversine_distance(initial_output, y).mean().item()
+            print(f"Initial distance: {initial_distance:.2f} km")
+        
+        # Print trim steps
+        total_pixels = 224 * 224  # Only count spatial dimensions (224x224)
+        trim_steps = [
+            int(total_pixels / 8),    # 12.5% of pixels
+            int(total_pixels / 16),   # 6.25% of pixels
+            int(total_pixels / 32),   # 3.125% of pixels
+            int(total_pixels / 64),   # 1.5% of pixels
+            self.sparsity            # Final target sparsity
+        ]
+        print("\nTrim steps:")
+        for i, step in enumerate(trim_steps):
+            print(f"Step {i+1}: {step} pixels ({step/total_pixels*100:.2f}% of total pixels)")
+        
         # Call the attack method directly
+        print("\nStarting PGDTrim attack...")
         adv_x = self.attack.perturb(x, y)
+        
+        # Get final prediction
+        with torch.no_grad():
+            final_output, _ = self.model.predict_from_tensor(adv_x)
+            final_distance = haversine_distance(final_output, y).mean().item()
+            print(f"Final distance: {final_distance:.2f} km")
+            print(f"Distance improvement: {final_distance - initial_distance:.2f} km")
         
         # Return adversarial examples
         return adv_x
