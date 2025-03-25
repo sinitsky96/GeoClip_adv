@@ -12,7 +12,7 @@ from data.MP_16.download import load_mp16_data, get_transforms as get_mp16_trans
 from data.mixed_dataset.download import get_mixed_dataloader, get_transforms as get_mixed_transforms
 from transformers import CLIPModel
 
-from SparsePatches.attack_sparse_patches import AttackGeoCLIP_SparsePatches, AttackCLIP_SparsePatches, AttackGeoCLIP_SparsePatches_Kernel
+from SparsePatches.attack_sparse_patches import AttackGeoCLIP_SparsePatches, AttackCLIP_SparsePatches, AttackGeoCLIP_SparsePatches_Kernel, AttackCLIP_SparsePatches_Kernel, ClipWrap
 from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
 
 
@@ -144,22 +144,50 @@ if __name__ == '__main__':
         
         # Load data using the mixed dataset dataloader
         print(f"Loading mixed dataset with {args.samples_per_dataset} samples per dataset")
-        dataloader = get_mixed_dataloader(
-            args.data_path,
-            batch_size=args.bs,
-            samples_per_dataset=args.samples_per_dataset,
-            transform=transform
-        )
         
-        # Convert dataloader to tensors
-        x_tensors = []
-        y_tensors = []
-        for x, y in dataloader:
-            x_tensors.append(x)
-            y_tensors.append(y)
-        
-        x_test = torch.cat(x_tensors, dim=0)
-        y_test = torch.cat(y_tensors, dim=0)
+        # Based on the model type, load appropriate data format
+        if args.model.lower() == 'clip':
+            # For CLIP model, get both GPS coordinates and class labels
+            dataloader = get_mixed_dataloader(
+                args.data_path,
+                batch_size=args.bs,
+                samples_per_dataset=args.samples_per_dataset,
+                transform=transform,
+                clip_varient=True  # Request labels for CLIP classification (Note: spelling is 'varient' not 'variant')
+            )
+            
+            # Convert dataloader to tensors
+            x_tensors = []
+            y_geo_tensors = []
+            y_label_tensors = []
+            
+            for x, y_geo, y_label in dataloader:
+                x_tensors.append(x)
+                y_geo_tensors.append(y_geo)
+                y_label_tensors.append(y_label)
+            
+            x_test = torch.cat(x_tensors, dim=0)
+            y_test_geo = torch.cat(y_geo_tensors, dim=0)  # GPS coordinates for distance calculations
+            y_test = torch.cat(y_label_tensors, dim=0)    # Class indices for CLIP classification
+        else:
+            # For GeoCLIP model, we only need GPS coordinates
+            dataloader = get_mixed_dataloader(
+                args.data_path,
+                batch_size=args.bs,
+                samples_per_dataset=args.samples_per_dataset,
+                transform=transform
+            )
+            
+            # Convert dataloader to tensors
+            x_tensors = []
+            y_tensors = []
+            
+            for x, y in dataloader:
+                x_tensors.append(x)
+                y_tensors.append(y)
+            
+            x_test = torch.cat(x_tensors, dim=0)
+            y_test = torch.cat(y_tensors, dim=0)  # GPS coordinates for GeoCLIP
         
         n_examples = len(x_test)
         args.n_ex = min(args.n_ex, n_examples)
@@ -171,26 +199,39 @@ if __name__ == '__main__':
         model.to(device)
         model.eval()
     elif args.model.lower() == "clip":
-        model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
-        model.to(device)
-        model.eval()
+        model_raw = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+        model_raw.to(device)
+        model_raw.eval()
+        # Wrap the model with ClipWrap for proper processing
+        model = ClipWrap(model_raw, args.data_path, device)
     
     # Create log directories
     logsdir = '{}/logs_{}_{}'.format(args.save_dir, "sparse_patches", args.norm)
     savedir = '{}/{}_{}'.format(args.save_dir, "sparse_patches", args.norm)
-    if not os.path.exists(savedir):
-        os.makedirs(savedir)
-    if not os.path.exists(logsdir):
-        os.makedirs(logsdir)
     
-    # Set loss type
-    if args.targeted:
-        args.loss = 'ce'
+    # Ensure directories exist with proper permissions
+    if not os.path.exists(savedir):
+        os.makedirs(savedir, exist_ok=True)
+        print(f"Created save directory: {savedir}")
+    if not os.path.exists(logsdir):
+        os.makedirs(logsdir, exist_ok=True)
+        print(f"Created logs directory: {logsdir}")
+    
+    # Generate a timestamp for the log file
+    timestamp = str(datetime.now())[:-7].replace(' ', '_').replace(':', '-')
     
     # Create parameter string for logging
     param_run = '{}_{}_{}_1_{}_iter_{}_eps_l_inf_{:.2f}_loss_{}_sparsity_{:.0f}_targeted_{}_targetclass_{}_seed_{:.0f}'.format(
         "sparse_patches", args.norm, args.model, args.n_ex, args.n_iter, args.eps_l_inf,
         args.loss, args.sparsity, args.targeted, args.target_class, args.seed)
+    
+    # Build the full log path
+    log_file_path = '{}/log_run_{}_{}.txt'.format(logsdir, timestamp, param_run)
+    print(f"Log will be written to: {log_file_path}")
+    
+    # Set loss type
+    if args.targeted:
+        args.loss = 'ce'
     
     # Initialize the attack
     if args.attack_type == 'sparse':
@@ -207,11 +248,11 @@ if __name__ == '__main__':
                 device=device,
                 verbose=True,
                 seed=args.seed,
-                log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run)
+                log_path=log_file_path  # Use the consistent log path
             )
         elif args.model.lower() == "clip":
             adversary = AttackCLIP_SparsePatches(
-                model=model,
+                model=model_raw,  # Pass the raw model, not the ClipWrap
                 data_path=args.data_path,
                 norm=args.norm,
                 sparsity=args.sparsity,
@@ -223,26 +264,44 @@ if __name__ == '__main__':
                 device=device,
                 verbose=True,
                 seed=args.seed,
-                log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run)
+                log_path=log_file_path  # Use the consistent log path
             )
-            model = adversary.get_logits  # Use the wrapped model
     elif args.attack_type == 'kernel':
-        adversary = AttackGeoCLIP_SparsePatches_Kernel(
-            model=model,
-            norm=args.norm,
-            sparsity=args.sparsity,
-            kernel_size=args.kernel_size,
-            kernel_sparsity=args.kernel_sparsity,
-            eps_l_inf=args.eps_l_inf,
-            n_iter=args.n_iter,
-            n_restarts=args.n_restarts,
-            targeted=args.targeted,
-            loss=args.loss,
-            device=device,
-            verbose=True,
-            seed=args.seed,
-            log_path='{}/log_run_{}_{}.txt'.format(logsdir, str(datetime.now())[:-7], param_run)
-        )
+        if args.model.lower() == 'geoclip':
+            adversary = AttackGeoCLIP_SparsePatches_Kernel(
+                model=model,
+                norm=args.norm,
+                sparsity=args.sparsity,
+                kernel_size=args.kernel_size,
+                kernel_sparsity=args.kernel_sparsity,
+                eps_l_inf=args.eps_l_inf,
+                n_iter=args.n_iter,
+                n_restarts=args.n_restarts,
+                targeted=args.targeted,
+                loss=args.loss,
+                device=device,
+                verbose=True,
+                seed=args.seed,
+                log_path=log_file_path  # Use the consistent log path
+            )
+        else:  # CLIP model
+            adversary = AttackCLIP_SparsePatches_Kernel(
+                model=model_raw,  # Pass the raw model, not the ClipWrap
+                data_path=args.data_path,
+                norm=args.norm,
+                sparsity=args.sparsity,
+                kernel_size=args.kernel_size,
+                kernel_sparsity=args.kernel_sparsity,
+                eps_l_inf=args.eps_l_inf,
+                n_iter=args.n_iter,
+                n_restarts=args.n_restarts,
+                targeted=args.targeted,
+                loss=args.loss,
+                device=device,
+                verbose=True,
+                seed=args.seed,
+                log_path=log_file_path  # Use the consistent log path
+            )
     
     # Set target classes for targeted attacks
     if args.targeted:
@@ -272,7 +331,7 @@ if __name__ == '__main__':
             if args.model.lower() == "geoclip":
                 output, _ = model.predict_from_tensor(x_curr)
             else:  # CLIP
-                output = model(x_curr)
+                output = model(x_curr)  # Now using the ClipWrap which properly handles inputs
 
             # Keep output on the same device as y_curr for consistent device handling
             output = output.to(device=device)
@@ -282,11 +341,14 @@ if __name__ == '__main__':
                     pred = torch.cat((pred, (haversine_distance(output, y_curr) <= CONTINENT_R).float().to(cpu_device)), dim=0)
                 else:
                     pred = torch.cat((pred, (haversine_distance(output, y_curr) > STREET_R).float().to(cpu_device)), dim=0)
-            else:
+            else:  # CLIP
                 if not args.targeted:
-                    pred = torch.cat((pred, (output.max(1)[1] == y_curr).float().to(cpu_device)), dim=0)
+                    # For CLIP, compare the max logit index with the class label
+                    pred_correct = (output.argmax(dim=1) == y_curr).float()
+                    pred = torch.cat((pred, pred_correct.to(cpu_device)), dim=0)
                 else:
-                    pred = torch.cat((pred, (output.max(1)[1] != y_curr).float().to(cpu_device)), dim=0)
+                    pred_incorrect = (output.argmax(dim=1) != y_curr).float()
+                    pred = torch.cat((pred, pred_incorrect.to(cpu_device)), dim=0)
 
             del x_curr
             del y_curr
@@ -314,12 +376,13 @@ if __name__ == '__main__':
         print(f"Number of batches: {n_batches}, Batch size: {bs}")
         
         # Store all distances for final statistics
-        clean_distances = []
+        clean_distances_all = []  # For all examples
+        clean_distances_attacked = []  # Only for attacked examples
         adv_distances = []
         
-        # First collect clean prediction distances
+        # First collect clean prediction distances for all examples
         with torch.no_grad():
-            for batch_idx in range(n_batches):
+            for batch_idx in range(int(np.ceil(n_examples / bs))):
                 start_idx = batch_idx * bs
                 end_idx = min((batch_idx + 1) * bs, n_examples)
 
@@ -329,7 +392,21 @@ if __name__ == '__main__':
                 if args.model.lower() == "geoclip":
                     output, _ = model.predict_from_tensor(x_curr)
                     distances = haversine_distance(output, y_curr)
-                    clean_distances.append(distances.cpu())
+                    clean_distances_all.append(distances.cpu())
+
+        # Get clean distances for attacked examples only
+        with torch.no_grad():
+            for batch_idx in range(n_batches):
+                start_idx = batch_idx * bs
+                end_idx = min((batch_idx + 1) * bs, len(ind_to_fool))
+
+                x_curr = x_test[ind_to_fool[start_idx:end_idx]].clone().detach().to(device)
+                y_curr = y_test[ind_to_fool[start_idx:end_idx]].clone().detach().to(device)
+
+                if args.model.lower() == "geoclip":
+                    output, _ = model.predict_from_tensor(x_curr)
+                    distances = haversine_distance(output, y_curr)
+                    clean_distances_attacked.append(distances.cpu())
 
         # Run attack and collect adversarial distances
         progress_bar = tqdm(range(n_batches), desc="Attack progress", leave=True)
@@ -356,6 +433,16 @@ if __name__ == '__main__':
                 else:
                     batch_success = (distances <= STREET_R)
                     pred_adv[ind_to_fool[start_idx:end_idx]] = (~batch_success).float().to(cpu_device)
+            else:  # CLIP
+                # For CLIP, evaluate using the wrapped model
+                output = model(adv)
+                
+                if not args.targeted:
+                    batch_success = (output.argmax(dim=1) != y_curr)  # Success means misclassification
+                    pred_adv[ind_to_fool[start_idx:end_idx]] = (~batch_success).float().to(cpu_device)
+                else:
+                    batch_success = (output.argmax(dim=1) == y_curr)  # Success means targeting specific class
+                    pred_adv[ind_to_fool[start_idx:end_idx]] = (~batch_success).float().to(cpu_device)
             
             # Update progress bar
             current_success = 1.0 - pred_adv[ind_to_fool[:end_idx]].mean().item()
@@ -370,7 +457,8 @@ if __name__ == '__main__':
         progress_bar.close()
         
         # Combine all distances
-        clean_distances = torch.cat(clean_distances)
+        clean_distances_all = torch.cat(clean_distances_all)
+        clean_distances_attacked = torch.cat(clean_distances_attacked)
         adv_distances = torch.cat(adv_distances)
         
         # Calculate statistics
@@ -384,28 +472,32 @@ if __name__ == '__main__':
         def calc_percentage(distances, radius):
             return (distances <= radius).float().mean().item() * 100
 
-        # Print clean prediction statistics
-        print("\nClean Prediction Statistics:")
-        print(f"Percentage of clean predictions within STREET_R (1 km): {calc_percentage(clean_distances, STREET_R):.2f}%")
-        print(f"Percentage of clean predictions within CITY_R (25 km): {calc_percentage(clean_distances, CITY_R):.2f}%")
-        print(f"Percentage of clean predictions within REGION_R (200 km): {calc_percentage(clean_distances, REGION_R):.2f}%")
-        print(f"Percentage of clean predictions within COUNTRY_R (750 km): {calc_percentage(clean_distances, COUNTRY_R):.2f}%")
-        print(f"Percentage of clean predictions within CONTINENT_R (2500 km): {calc_percentage(clean_distances, CONTINENT_R):.2f}%")
+        # Print clean prediction statistics (for all examples)
+        print("\nClean Prediction Statistics (All Examples):")
+        print(f"Percentage of clean predictions within STREET_R (1 km): {calc_percentage(clean_distances_all, STREET_R):.2f}%")
+        print(f"Percentage of clean predictions within CITY_R (25 km): {calc_percentage(clean_distances_all, CITY_R):.2f}%")
+        print(f"Percentage of clean predictions within REGION_R (200 km): {calc_percentage(clean_distances_all, REGION_R):.2f}%")
+        print(f"Percentage of clean predictions within COUNTRY_R (750 km): {calc_percentage(clean_distances_all, COUNTRY_R):.2f}%")
+        print(f"Percentage of clean predictions within CONTINENT_R (2500 km): {calc_percentage(clean_distances_all, CONTINENT_R):.2f}%")
 
-        # Print adversarial prediction statistics
-        print("\nAdversarial Prediction Statistics:")
+        # Print adversarial prediction statistics (only for attacked examples)
+        print("\nAdversarial Prediction Statistics (Attacked Examples):")
         print(f"Percentage of adv predictions within STREET_R (1 km): {calc_percentage(adv_distances, STREET_R):.2f}%")
         print(f"Percentage of adv predictions within CITY_R (25 km): {calc_percentage(adv_distances, CITY_R):.2f}%")
         print(f"Percentage of adv predictions within REGION_R (200 km): {calc_percentage(adv_distances, REGION_R):.2f}%")
         print(f"Percentage of adv predictions within COUNTRY_R (750 km): {calc_percentage(adv_distances, COUNTRY_R):.2f}%")
         print(f"Percentage of adv predictions within CONTINENT_R (2500 km): {calc_percentage(adv_distances, CONTINENT_R):.2f}%")
 
-        # Calculate percentage of positively changed examples
-        improved_mask = adv_distances < clean_distances
+        # Calculate percentage of positively changed examples (comparing only attacked examples)
+        improved_mask = adv_distances < clean_distances_attacked
         percent_improved = improved_mask.float().mean().item() * 100
         print(f"\nPercentage of positively changed examples distance: {percent_improved:.2f}%")
         
         # Save results
         torch.save(adv_complete, '{}/adv_complete_{}.pt'.format(savedir, param_run))
+        
+        # Close the logger if it exists
+        if hasattr(adversary, 'logger') and adversary.logger is not None:
+            adversary.logger.close()
         
         print('\nDone!') 

@@ -11,7 +11,7 @@ echo "CUDA Environment:"
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 nvidia-smi
 
-echo "Running GeoCLIP attack with SparsePatches PGDTrim on a single sample..."
+echo "Running CLIP attack with SparsePatches PGDTrim on a single sample..."
 
 # Configure CUDA memory allocation
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -21,6 +21,27 @@ if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
     export CUDA_VISIBLE_DEVICES=0
 fi
 
-$PYTHON ./SparsePatches/eval.py --attack_type kernel --kernel_size 4 --model geoclip --norm L0 --bs 32 --n_ex 1  --eps_l_inf 0.1 --n_restarts 3 --n_iter 100  --dataset mixed  --device cuda
+# Store the original directory
+ORIGINAL_DIR=$(pwd)
 
-cd $ORIGINAL_DIR 
+# Run CLIP attack with kernel-based PGDTrim
+$PYTHON ./SparsePatches/eval.py \
+    --attack_type kernel \
+    --model clip \
+    --norm L0 \
+    --sparsity 224 \
+    --kernel_size 4 \
+    --kernel_sparsity 8 \
+    --bs 32 \
+    --n_ex 1 \
+    --eps_l_inf 0.1 \
+    --n_restarts 3 \
+    --n_iter 100 \
+    --dataset mixed \
+    --device cuda \
+    --loss ce \
+    --data_path ./data
+
+cd $ORIGINAL_DIR
+
+
