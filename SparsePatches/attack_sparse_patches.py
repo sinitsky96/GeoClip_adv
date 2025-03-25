@@ -1,17 +1,16 @@
+import os
 import torch
 import torch.nn.functional as F
 import numpy as np
-from PIL import Image
-import os
 from datetime import datetime
 from tqdm import tqdm
-from torchvision import transforms
-from transformers import CLIPProcessor
+from PIL import Image
+
 from attacks.pgd_attacks.PGDTrim import PGDTrim
-from attacks.pgd_attacks.PGDTrimKernel import PGDTrimKernel
 from attacks.geoattack import GeoAttackPGDTrim, GeoCLIPPredictor, GeoLocationLoss, haversine_distance, GeoAttackPGDTrimKernel
 from sparse_rs.util import CONTINENT_R, STREET_R
 from data.Im2GPS3k.download import load_places365_categories
+from transformers import CLIPProcessor
 
 def find_nearest_neighbor_index(gps_gallery, coord):
     """Find the index of the closest GPS coordinate in the gallery"""
@@ -35,52 +34,39 @@ def coords_to_class_indices_nn(gps_gallery, coords):
         label_indices.append(index)
     return torch.LongTensor(label_indices).to(device)
 
-def load_places365_categories(file_path):
-    """Load Places365 categories from file"""
-    with open(file_path, 'r') as f:
-        categories = [line.strip() for line in f.readlines()]
-    return categories
-
 class ClipWrap:
-    """Wrapper for CLIP model to handle inputs properly"""
+    """
+    Wrapper for CLIP model to make it compatible with the attack interface.
+    Exactly matches the implementation from sparse_rs/attack_sparse_rs.py
+    """
     def __init__(self, model, data_path, device):
-        self.model = model
         self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14",
-                                                     do_rescale=False,
-                                                     do_resize=False,
-                                                     do_center_crop=False,
-                                                     do_normalize=False)
+                                                      do_rescale=False,
+                                                      do_resize=False,
+                                                      do_center_crop=False,
+                                                      do_normalize=False
+                                                     )
         self.prompts = load_places365_categories(os.path.join(data_path, 'places365_cat.txt'))
         self.device = device
-        
+        self.model = model
+
     def __call__(self, x):
-        """Process input and get logits"""
-        return self.forward(x)
+        return self.get_logits(x)
+
+    def get_logits(self, x):
+        inputs = self.processor(images=x,               
+                                text=self.prompts,       
+                                return_tensors="pt",
+                                padding=True).to(self.device)
         
-    def forward(self, x):
-        """Process input and get logits - explicit forward method for compatibility"""
-        # Convert tensor to PIL images
-        images = []
-        for img in x:
-            img = img.cpu().permute(1, 2, 0).numpy()
-            img = (img * 255).astype(np.uint8)
-            images.append(Image.fromarray(img))
-        
-        # Process images with CLIP processor - must include both images and text inputs
-        inputs = self.processor(
-            images=images,
-            text=self.prompts,
-            return_tensors="pt",
-            padding=True
-        )
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-        
-        # Get logits
-        with torch.no_grad():
+        # Use torch.no_grad() for evaluation, not during attack
+        if not x.requires_grad:
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+        else:
             outputs = self.model(**inputs)
-            logits = outputs.logits_per_image
-        
-        return logits
+
+        return outputs.logits_per_image
 
 class AttackGeoCLIP_SparsePatches:
     """
@@ -285,11 +271,17 @@ class AttackGeoCLIP_SparsePatches:
         if self.verbose:
             print(message)
             if self.logger is not None:
-                try:
-                    self.logger.log(message)
-                except Exception as e:
-                    print(f"Warning: Failed to write to log file: {e}")
+                self.logger.log(message)
 
+
+# Create a wrapped model class that has a forward method
+class ModelWrapper(torch.nn.Module):
+    def __init__(self, get_logits_func):
+        super().__init__()
+        self.get_logits_func = get_logits_func
+        
+    def forward(self, x):
+        return self.get_logits_func(x)
 
 class AttackCLIP_SparsePatches:
     """
@@ -308,10 +300,19 @@ class AttackCLIP_SparsePatches:
         self.log_path = log_path
         self.logger = Logger(log_path) if log_path is not None else None
         self.sparsity = sparsity
+        self.data_path = data_path
         
-        # Set up CLIP processor and prompts
-        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
-        self.prompts = load_places365_categories(os.path.join(data_path, 'places365_cat.txt'))
+        # Create a ClipWrap instance to handle CLIP model processing
+        self.clip_wrap = ClipWrap(model, data_path, device)
+        
+        # Create a wrapped model class that has a forward method
+        class ModelWrapper(torch.nn.Module):
+            def __init__(self, clip_wrap):
+                super().__init__()
+                self.clip_wrap = clip_wrap
+                
+            def forward(self, x):
+                return self.clip_wrap(x)
         
         # Calculate total image pixels and trim steps according to the paper
         total_pixels =  224 * 224  # 224x224 image
@@ -389,9 +390,12 @@ class AttackCLIP_SparsePatches:
         
         kernel_args = None  # Not using kernel attacks
         
+        # Create a wrapper model to handle the 'forward' issue
+        self.model_wrapper = ModelWrapper(self.clip_wrap)
+        
         # Create the PGDTrim attack instance
         self.attack = PGDTrim(
-            model=self.get_logits,
+            model=self.model_wrapper,  # Use the wrapper model
             criterion=self.compute_loss,
             misc_args=misc_args,
             pgd_args=pgd_args,
@@ -401,17 +405,13 @@ class AttackCLIP_SparsePatches:
             kernel_args=kernel_args
         )
     
+    def __call__(self, x):
+        """Make this class callable similar to ClipWrap in sparse_rs"""
+        return self.clip_wrap(x)
+    
     def get_logits(self, x):
         """Get logits from the CLIP model"""
-        inputs = self.processor(images=x,               
-                              text=self.prompts,       
-                              return_tensors="pt",
-                              padding=True)
-        
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-        
-        return outputs.logits_per_image
+        return self.clip_wrap(x)
     
     def predict(self, x):
         """Get predictions from the CLIP model"""
@@ -464,246 +464,7 @@ class AttackCLIP_SparsePatches:
         if self.verbose:
             print(message)
             if self.logger is not None:
-                try:
-                    self.logger.log(message)
-                except Exception as e:
-                    print(f"Warning: Failed to write to log file: {e}")
-
-
-class AttackCLIP_SparsePatches_Kernel:
-    """
-    A kernel-based PGDTrim attack class for CLIP models.
-    
-    This attack applies structured kernel perturbations to create adversarial examples.
-    Each kernel is a small patch (e.g., 3x3 or 4x4) with a specified number of perturbed pixels.
-    """
-    def __init__(self, model, data_path, norm='L0', sparsity=100, eps_l_inf=0.03, n_iter=40, 
-                 kernel_size=3, kernel_sparsity=9, 
-                 n_restarts=1, targeted=False, loss='margin', device='cuda',
-                 verbose=True, seed=42, constant_schedule=False,
-                 data_loader=None, resample_loc=None, log_path=None):
-        
-        self.device = device
-        self.targeted = targeted
-        self.loss_type = loss
-        self.verbose = verbose
-        self.seed = seed
-        self.log_path = log_path
-        self.logger = Logger(log_path) if log_path is not None else None
-        self.sparsity = sparsity
-        
-        # Wrap the CLIP model
-        self.model = ClipWrap(model, data_path, device)
-        
-        # Calculate total image pixels and trim steps according to the paper
-        total_pixels = 224 * 224  # Only count spatial dimensions (224x224)
-        trim_steps = [
-            int(total_pixels / 8),    # 12.5% of pixels
-            int(total_pixels / 16),   # 6.25% of pixels
-            int(total_pixels / 32),   # 3.125% of pixels
-            int(total_pixels / 64),   # 1.5% of pixels
-            sparsity                  # Final target sparsity
-        ]
-        
-        # For kernel attack, configure the kernel parameters
-        kernel_args = {
-            'kernel_size': kernel_size,  # Fixed kernel size
-            'n_kernel_pixels': kernel_size * kernel_size,  # Total pixels per kernel
-            'kernel_sparsity': kernel_sparsity,  # Number of active pixels per kernel
-            'max_kernel_sparsity': kernel_size * kernel_size,  # Maximum sparsity per kernel
-            'kernel_min_active': 2,  # Minimum 2 active pixels per kernel
-            'kernel_group': 'pixels',  # Group pixels by kernels
-        }
-        
-        misc_args = {
-            'device': device,
-            'n_restarts': n_restarts,
-            'report_info': True,
-            'verbose': verbose,
-            'seed': seed,
-            'dtype': torch.float32,
-            'batch_size': 32,
-            'data_shape': [3, 224, 224],  # Image shape [channels, width, height]
-            'data_RGB_start': [0.0, 0.0, 0.0],  # Min RGB values
-            'data_RGB_end': [1.0, 1.0, 1.0],    # Max RGB values
-            'data_RGB_size': [1.0, 1.0, 1.0],    # Range of RGB values
-            'targeted': targeted  # Pass targeted flag to the attack
-        }
-        
-        pgd_args = {
-            'eps_ratio': eps_l_inf,
-            'eps': eps_l_inf,  # L_inf constraint
-            'norm': norm,
-            'n_iter': n_iter,
-            'alpha': eps_l_inf * 0.5 if eps_l_inf > 0 else 0.0,  # Step size for optimization
-            'alpha_ratio': eps_l_inf * 0.5 if eps_l_inf > 0 else 0.0,
-            'restarts_interval': 1,
-            'w_iter_ratio': 1.0,
-            'n_restarts': n_restarts,
-            'rand_init': True
-        }
-        
-        dropout_args = {
-            'dpo_mu': 0.0,
-            'dpo_sigma': 0.0,
-            'dpo_mu_sched': 0.0,
-            'dpo_sigma_sched': 0.0,
-            'dropout_mean': 0.0,
-            'dropout_std': 0.0,
-            'dropout_dist': 'none',
-            'dropout_std_bernoulli': False
-        }
-        
-        trim_args = {
-            'sparsity': kernel_sparsity,  # Maximum sparsity per kernel
-            'trim_steps': trim_steps,  # Use calculated trim steps
-            'max_trim_steps': len(trim_steps),
-            'trim_steps_reduce': 'none',
-            'scale_dpo_mean': True,
-            'post_trim_dpo': True,
-            'dynamic_trim': True,
-            'l0_methods': ['full'],
-            'sparsity_distribution': 'constant',
-            'trim_with_mask': 'single'
-        }
-        
-        mask_args = {
-            'mask_dist': 'topk',  # Use topk for deterministic selection of best pixels
-            'mask_prob_amp_rate': 1.0,
-            'norm_mask_amp': True,
-            'mask_opt_iter': 10,
-            'n_mask_samples': 1,
-            'sample_all_masks': False,
-            'trim_best_mask': True
-        }
-        
-        # Create the PGDTrimKernel instance
-        self.attack = PGDTrimKernel(
-            model=self.model,
-            criterion=self.compute_loss,
-            misc_args=misc_args,
-            pgd_args=pgd_args,
-            dropout_args=dropout_args,
-            trim_args=trim_args,
-            mask_args=mask_args,
-            kernel_args=kernel_args
-        )
-    
-    def compute_loss(self, x, y):
-        """
-        Compute the loss for the attack based on the specified loss type
-        """
-        if self.loss_type == 'margin':
-            return self.compute_margin_loss(x, y)
-        elif self.loss_type == 'ce':
-            return self.compute_ce_loss(x, y)
-        else:
-            raise ValueError(f"Unsupported loss type: {self.loss_type}")
-    
-    def compute_margin_loss(self, x, y):
-        """
-        Compute margin loss based on logits
-        """
-        logits = self.model(x)
-        
-        # Get the logits for the correct class and other classes
-        u = torch.arange(len(x), device=self.device)
-        y_corr = logits[u, y].clone()
-        logits[u, y] = -float('inf')
-        y_others = logits.max(dim=-1)[0]
-        
-        if not self.targeted:
-            margin = y_corr - y_others
-            loss = margin
-        else:
-            margin = y_others - y_corr
-            loss = margin
-            
-        # Log loss information
-        if self.verbose and x.shape[0] == 1:  # Only log for single samples to avoid clutter
-            mean_loss = loss.mean().item()
-            success = (margin < 0).any().item() if not self.targeted else (margin > 0).any().item()
-            self.log(f"Step - Loss: {mean_loss:.6f}, Success: {success}")
-            
-        return loss
-    
-    def compute_ce_loss(self, x, y):
-        """
-        Compute cross-entropy loss
-        """
-        logits = self.model(x)
-        
-        if not self.targeted:
-            loss = -1.0 * F.cross_entropy(logits, y, reduction='none')
-        else:
-            loss = F.cross_entropy(logits, y, reduction='none')
-            
-        return loss
-    
-    def perturb(self, x, y):
-        """
-        Generate adversarial examples for a batch of inputs.
-        
-        Args:
-            x (torch.Tensor): Original images of shape (B, 3, H, W)
-            y (torch.Tensor): Ground-truth labels of shape (B,)
-            
-        Returns:
-            torch.Tensor: adversarial_examples
-        """
-        print(f"\nStarting kernel-based attack with {self.sparsity} target sparsity...")
-        print(f"Input shape: {x.shape}, Target shape: {y.shape}")
-        print(f"Using device: {x.device}")
-        
-        if self.logger is not None:
-            self.logger.log(f"\nStarting kernel-based attack with {self.sparsity} target sparsity...")
-            self.logger.log(f"Input shape: {x.shape}, Target shape: {y.shape}")
-            self.logger.log(f"Using device: {x.device}")
-        
-        # Get initial prediction
-        with torch.no_grad():
-            initial_logits = self.model(x)
-            initial_pred = initial_logits.argmax(dim=1)
-            initial_acc = (initial_pred == y).float().mean().item()
-            print(f"Initial accuracy: {initial_acc:.2%}")
-        
-        # Print trim steps
-        total_pixels = 224 * 224  # Only count spatial dimensions (224x224)
-        trim_steps = [
-            int(total_pixels / 8),    # 12.5% of pixels
-            int(total_pixels / 16),   # 6.25% of pixels
-            int(total_pixels / 32),   # 3.125% of pixels
-            int(total_pixels / 64),   # 1.5% of pixels
-            self.sparsity            # Final target sparsity
-        ]
-        print("\nTrim steps:")
-        for i, step in enumerate(trim_steps):
-            print(f"Step {i+1}: {step} pixels ({step/total_pixels*100:.2f}% of total pixels)")
-        
-        # Call the attack method directly
-        print("\nStarting PGDTrim attack...")
-        adv_x = self.attack.perturb(x, y)
-        
-        # Get final prediction
-        with torch.no_grad():
-            final_logits = self.model(adv_x)
-            final_pred = final_logits.argmax(dim=1)
-            final_acc = (final_pred == y).float().mean().item()
-            print(f"Final accuracy: {final_acc:.2%}")
-            print(f"Accuracy change: {final_acc - initial_acc:.2%}")
-        
-        # Return adversarial examples
-        return adv_x
-    
-    def log(self, message):
-        """Log a message if verbose"""
-        if self.verbose:
-            print(message)
-            if self.logger is not None:
-                try:
-                    self.logger.log(message)
-                except Exception as e:
-                    print(f"Warning: Failed to write to log file: {e}")
+                self.logger.log(message)
 
 
 class AttackGeoCLIP_SparsePatches_Kernel:
@@ -900,11 +661,6 @@ class AttackGeoCLIP_SparsePatches_Kernel:
         print(f"Input shape: {x.shape}, Target shape: {y.shape}")
         print(f"Using device: {x.device}")
         
-        if self.logger is not None:
-            self.logger.log(f"\nStarting kernel-based attack with {self.sparsity} target sparsity...")
-            self.logger.log(f"Input shape: {x.shape}, Target shape: {y.shape}")
-            self.logger.log(f"Using device: {x.device}")
-        
         # Get initial prediction
         with torch.no_grad():
             initial_output, _ = self.model.predict_from_tensor(x)
@@ -943,10 +699,229 @@ class AttackGeoCLIP_SparsePatches_Kernel:
         if self.verbose:
             print(message)
             if self.logger is not None:
-                try:
-                    self.logger.log(message)
-                except Exception as e:
-                    print(f"Warning: Failed to write to log file: {e}")
+                self.logger.log(message)
+
+
+class AttackCLIP_SparsePatches_Kernel:
+    """
+    A kernel-based PGDTrim attack for CLIP models.
+    
+    This attack applies structured kernel perturbations to create adversarial examples
+    for CLIP models. Each kernel is a small patch (e.g., 3x3 or 4x4) with a 
+    specified number of perturbed pixels.
+    """
+    def __init__(self, model, data_path, norm='L0', sparsity=100, eps_l_inf=0.03, n_iter=40, 
+                 kernel_size=3, kernel_sparsity=9, 
+                 n_restarts=1, targeted=False, loss='margin', device='cuda',
+                 verbose=True, seed=42, constant_schedule=False,
+                 data_loader=None, resample_loc=None, log_path=None):
+        
+        self.model = model
+        self.device = device
+        self.targeted = targeted
+        self.loss_type = loss
+        self.verbose = verbose
+        self.seed = seed
+        self.log_path = log_path
+        self.logger = Logger(log_path) if log_path is not None else None
+        self.sparsity = sparsity
+        self.data_path = data_path
+        
+        # Create a ClipWrap instance to handle CLIP model processing
+        self.clip_wrap = ClipWrap(model, data_path, device)
+        
+        # Create a wrapped model class that has a forward method
+        class ModelWrapper(torch.nn.Module):
+            def __init__(self, clip_wrap):
+                super().__init__()
+                self.clip_wrap = clip_wrap
+                
+            def forward(self, x):
+                return self.clip_wrap(x)
+            
+        # Calculate total image pixels and trim steps according to the paper
+        total_pixels =  224 * 224  # 224x224 image
+        trim_steps = [
+            int(total_pixels / 2),    # 50% of pixels
+            int(total_pixels / 4),    # 25% of pixels
+            int(total_pixels / 8),    # 12.5% of pixels
+            int(total_pixels / 16),   # 6.25% of pixels
+            int(total_pixels / 32),   # 3.125% of pixels
+            int(total_pixels / 64),   # 1.5% of pixels
+            sparsity                  # Final target sparsity
+        ]
+        
+        # For kernel attack, configure the kernel parameters
+        kernel_args = {
+            'kernel_size': kernel_size,  # Kernel size (e.g., 4x4)
+            'n_kernel_pixels': kernel_size * kernel_size,  # Total pixels per kernel
+            'kernel_sparsity': kernel_sparsity,  # Number of active pixels per kernel
+            'max_kernel_sparsity': kernel_size * kernel_size,  # Maximum sparsity per kernel
+            'kernel_min_active': 2,  # Minimum number of active pixels per kernel
+            'kernel_group': 'pixels',  # Group pixels by kernels
+        }
+        
+        misc_args = {
+            'device': device,
+            'n_restarts': n_restarts,
+            'report_info': True,
+            'verbose': verbose,
+            'seed': seed,
+            'dtype': torch.float32,
+            'batch_size': 32,
+            'data_shape': [3, 224, 224],  # Image shape [channels, width, height]
+            'data_RGB_start': [0.0, 0.0, 0.0],  # Min RGB values
+            'data_RGB_end': [1.0, 1.0, 1.0],    # Max RGB values
+            'data_RGB_size': [1.0, 1.0, 1.0],    # Range of RGB values
+            'targeted': targeted  # Pass targeted flag to the attack
+        }
+        
+        pgd_args = {
+            'eps_ratio': eps_l_inf,
+            'eps': eps_l_inf,  # L_inf constraint
+            'norm': norm,
+            'n_iter': n_iter,
+            'alpha': eps_l_inf * 0.5 if eps_l_inf > 0 else 0.0,  # Increased step size (alpha) for faster convergence
+            'alpha_ratio': eps_l_inf * 0.5 if eps_l_inf > 0 else 0.0,  # Increased alpha ratio as well
+            'restarts_interval': 1,
+            'w_iter_ratio': 1.0,
+            'n_restarts': n_restarts,
+            'rand_init': True
+        }
+        
+        dropout_args = {
+            'dpo_mu': 0.0,
+            'dpo_sigma': 0.0,
+            'dpo_mu_sched': 0.0,
+            'dpo_sigma_sched': 0.0,
+            'dropout_mean': 0.0,
+            'dropout_std': 0.0,
+            'dropout_dist': 'none',
+            'dropout_std_bernoulli': False
+        }
+        
+        trim_args = {
+            'sparsity': sparsity,
+            'trim_steps': trim_steps,
+            'max_trim_steps': len(trim_steps),
+            'trim_steps_reduce': 'none',
+            'scale_dpo_mean': True,
+            'post_trim_dpo': True,
+            'dynamic_trim': True,
+            'l0_methods': ['full'],
+            'sparsity_distribution': 'constant',
+            'trim_with_mask': 'single'
+        }
+        
+        mask_args = {
+            'mask_dist': 'topk',  # Use topk for deterministic selection of best pixels
+            'mask_prob_amp_rate': 1.0,
+            'norm_mask_amp': True,
+            'mask_opt_iter': 10,
+            'n_mask_samples': 1,
+            'sample_all_masks': False,
+            'trim_best_mask': True
+        }
+        
+        # Create the PGDTrim attack instance with kernel arguments
+        from attacks.pgd_attacks.PGDTrim import PGDTrim
+        
+        # Create a wrapper model to handle the 'forward' issue
+        self.model_wrapper = ModelWrapper(self.clip_wrap)
+        
+        self.attack = PGDTrim(
+            model=self.model_wrapper,  # Use the wrapper model
+            criterion=self.compute_loss,
+            misc_args=misc_args,
+            pgd_args=pgd_args,
+            dropout_args=dropout_args,
+            trim_args=trim_args,
+            mask_args=mask_args,
+            kernel_args=kernel_args  # Pass kernel args to regular PGDTrim
+        )
+    
+    def __call__(self, x):
+        """Make this class callable similar to ClipWrap in sparse_rs"""
+        return self.clip_wrap(x)
+    
+    def get_logits(self, x):
+        """Get logits from the CLIP model"""
+        return self.clip_wrap(x)
+    
+    def predict(self, x):
+        """Get predictions from the CLIP model"""
+        logits = self.get_logits(x)
+        probs = logits.softmax(dim=1)
+        predictions = probs.argmax(dim=1)
+        return predictions
+    
+    def compute_loss(self, x, y):
+        """Compute the loss for the attack"""
+        logits = self.get_logits(x)
+        xent = F.cross_entropy(logits, y, reduction='none')
+        
+        u = torch.arange(len(x), device=self.device)
+        y_corr = logits[u, y].clone()
+        logits[u, y] = -float('inf')
+        y_others = logits.max(dim=-1)[0]
+        
+        if not self.targeted:
+            if self.loss_type == 'ce':
+                return -1. * xent
+            elif self.loss_type == 'margin':
+                return y_corr - y_others
+        else:
+            # targeted
+            if self.loss_type == 'ce':
+                return xent
+            elif self.loss_type == 'margin':
+                return y_others - y_corr
+    
+    def perturb(self, x, y):
+        """
+        Generate adversarial examples for a batch of inputs.
+        
+        Args:
+            x (torch.Tensor): Original images of shape (B, 3, H, W)
+            y (torch.Tensor): Target class indices
+            
+        Returns:
+            torch.Tensor: adversarial_examples
+        """
+        print(f"\nStarting kernel-based attack for CLIP with {self.sparsity} target sparsity...")
+        print(f"Input shape: {x.shape}, Target shape: {y.shape}")
+        print(f"Using device: {x.device}")
+        
+        # Get initial prediction
+        with torch.no_grad():
+            initial_output = self.get_logits(x)
+            initial_preds = initial_output.argmax(dim=1)
+            correct = (initial_preds == y).float().mean().item() * 100
+            print(f"Initial accuracy: {correct:.2f}%")
+        
+        # Call the attack method directly
+        adv_x = self.attack.perturb(x, y)
+        
+        # Get final prediction
+        with torch.no_grad():
+            final_output = self.get_logits(adv_x)
+            final_preds = final_output.argmax(dim=1)
+            if not self.targeted:
+                success = (final_preds != y).float().mean().item() * 100
+                print(f"Attack success rate: {success:.2f}%")
+            else:
+                success = (final_preds == y).float().mean().item() * 100
+                print(f"Targeted attack success rate: {success:.2f}%")
+        
+        # Return adversarial examples
+        return adv_x
+    
+    def log(self, message):
+        """Log a message if verbose"""
+        if self.verbose:
+            print(message)
+            if self.logger is not None:
+                self.logger.log(message)
 
 
 class Logger:
@@ -954,16 +929,12 @@ class Logger:
     def __init__(self, path):
         self.path = path
         self.log_file = open(path, 'w')
-        print(f"Logger initialized. Writing to: {path}")
         
     def log(self, message):
         """Write message to log file"""
         self.log_file.write(message + '\n')
-        self.log_file.flush()  # Ensure immediate write to disk
+        self.log_file.flush()
         
     def close(self):
         """Close log file"""
-        if not self.log_file.closed:
-            self.log_file.flush()  # Ensure all data is written before closing
-            self.log_file.close()
-            print(f"Logger closed. Log file: {self.path}") 
+        self.log_file.close() 
