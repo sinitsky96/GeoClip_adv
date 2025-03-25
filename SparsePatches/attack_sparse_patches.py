@@ -262,7 +262,7 @@ class AttackCLIP_SparsePatches:
         self.prompts = load_places365_categories(os.path.join(data_path, 'places365_cat.txt'))
         
         # Calculate total image pixels and trim steps according to the paper
-        total_pixels = 3 * 224 * 224  # 3 channels, 224x224 image
+        total_pixels =  224 * 224  # 224x224 image
         trim_steps = [
             int(total_pixels / 2),    # 50% of pixels
             int(total_pixels / 4),    # 25% of pixels

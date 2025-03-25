@@ -102,6 +102,8 @@ class MixedDataset(Dataset):
         self.valid_indices = []
         valid_im2gps = 0
         valid_mp16 = 0
+        missing_im2gps = []
+        missing_mp16 = []
         
         for idx, row in enumerate(self.data.iterrows()):
             dataset = row[1]["dataset"]
@@ -118,25 +120,44 @@ class MixedDataset(Dataset):
             )
             
             try:
-                if os.path.exists(img_path):
-                    # Try to load the image to verify it's valid
-                    with Image.open(img_path) as img:
-                        img = img.convert("RGB")
-                        self.valid_indices.append(idx)
-                        if dataset == "im2gps":
-                            valid_im2gps += 1
-                        else:
-                            valid_mp16 += 1
+                if not os.path.exists(img_path):
+                    if dataset == "im2gps":
+                        missing_im2gps.append((img_id, "File not found"))
+                    else:
+                        missing_mp16.append((img_id, "File not found"))
+                    continue
+                    
+                # Try to load the image to verify it's valid
+                with Image.open(img_path) as img:
+                    img = img.convert("RGB")
+                    self.valid_indices.append(idx)
+                    if dataset == "im2gps":
+                        valid_im2gps += 1
+                    else:
+                        valid_mp16 += 1
             except Exception as e:
-                print(f"Error verifying image {img_path}: {e}")
+                if dataset == "im2gps":
+                    missing_im2gps.append((img_id, str(e)))
+                else:
+                    missing_mp16.append((img_id, str(e)))
                 continue
         
         if len(self.valid_indices) == 0:
             raise RuntimeError("No valid images found in the dataset. Please check the image paths and files.")
             
-        print(f"Found {len(self.valid_indices)} valid images out of {len(self.data)}:")
+        print(f"\nFound {len(self.valid_indices)} valid images out of {len(self.data)}:")
         print(f"  - Im2GPS3k: {valid_im2gps} images")
         print(f"  - MP-16: {valid_mp16} images")
+        
+        if missing_im2gps:
+            print("\nMissing Im2GPS3k images:")
+            for img_id, reason in missing_im2gps:
+                print(f"  - {img_id}: {reason}")
+                
+        if missing_mp16:
+            print("\nMissing MP-16 images:")
+            for img_id, reason in missing_mp16:
+                print(f"  - {img_id}: {reason}")
         
     def __len__(self):
         return len(self.valid_indices)
