@@ -87,6 +87,49 @@ def download_data(data_dir):
             os.chdir(cwd)
         else:
             print(f"Warning: Download script not found at {script_path}")
+
+    sampled_csv_path = os.path.join(mp16_path, SAMPLED_CSV)
+    if not os.path.exists(sampled_csv_path):
+        print(f"Sampled CSV not found at {sampled_csv_path}; creating via KMeans sampling...")
+        sample_kmeans(places_csv_path, sampled_csv_path, n_samples=200)  
+    else:
+        print(f"Sampled CSV already found at {sampled_csv_path}; skipping KMeans sampling.")
+
+    sampled_df = pd.read_csv(sampled_csv_path)
+    # Convert in-place
+    sampled_df["IMG_ID"] = sampled_df["IMG_ID"].apply(lambda x: x.replace('/', '_'))
+    # Overwrite the CSV so future runs are consistent
+    sampled_df.to_csv(sampled_csv_path, index=False)
+
+    local_filenames = set(os.listdir(images_path)) 
+    needed_ids = set(sampled_df["IMG_ID"])
+    missing_ids = needed_ids - local_filenames 
+
+    if not missing_ids:
+        print("All sampled images are already present on disk. No re-download needed.")
+    else:
+        print(f"Found {len(missing_ids)} missing images. Re-downloading those.")
+
+        urls_df = pd.read_csv(urls_csv_path, header=None, names=["IMG_PATH", "URL"])
+        urls_df["IMG_ID"] = urls_df["IMG_PATH"].apply(lambda x: x.replace('/', '_'))
+
+        missing_urls_df = urls_df[urls_df["IMG_ID"].isin(missing_ids)]
+        print(f"Found {len(missing_urls_df)} images in URLs file that match the missing IDs.")
+
+        if not missing_urls_df.empty:
+            # Write to a temp CSV and call download_images_from_urls
+            tmp_missing_csv = os.path.join(mp16_path, "mp16_missing_urls.csv")
+            missing_urls_df[["IMG_PATH", "URL"]].to_csv(tmp_missing_csv, header=False, index=False)
+
+            download_images_from_urls(
+                urls_csv_path=tmp_missing_csv,
+                images_path=images_path,
+                max_images=None,
+                num_workers=8
+            )
+        else:
+            print("No matching rows in mp16_urls.csv for these missing images!")
+
     
     return mp16_path, images_path, places_csv_path, urls_csv_path
 
