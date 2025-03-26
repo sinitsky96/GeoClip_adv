@@ -1,5 +1,9 @@
+import os
+import numpy as np
+import time
 import torch
 from torch.nn import functional as F
+from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
 
 
 class Attack:
@@ -146,13 +150,43 @@ class Attack:
     def eval_pert_untargeted(self, x, y, pert):
         with torch.no_grad():
             output, loss = self.test_pert(x, y, pert)
-            succ = torch.argmax(output, dim=1) != y
+            
+            # Check if we're dealing with GPS coordinates (shape [batch_size, 2])
+            if y.dim() == 2 and y.shape[1] == 2:
+                # Ensure output is also coordinates (not logits)
+                if output.dim() == 2 and output.shape[1] == 2:
+                    # For GPS coordinates, success is when distance > CONTINENT_R
+                    distance = haversine_distance(output, y)
+                    succ = distance > CONTINENT_R
+                else:
+                    # Output is logits but target is GPS - fallback to avoid error
+                    # Just consider all unsuccessful for now
+                    succ = torch.zeros(output.shape[0], dtype=torch.bool, device=output.device)
+            else:
+                # Regular classification - success when prediction doesn't match target
+                succ = torch.argmax(output, dim=1) != y
+                
             return loss, succ
 
     def eval_pert_targeted(self, x, y, pert):
         with torch.no_grad():
             output, loss = self.test_pert(x, y, pert)
-            succ = torch.argmax(output, dim=1) == y
+            
+            # Check if we're dealing with GPS coordinates (shape [batch_size, 2])
+            if y.dim() == 2 and y.shape[1] == 2:
+                # Ensure output is also coordinates (not logits)
+                if output.dim() == 2 and output.shape[1] == 2:
+                    # For GPS coordinates, success is when distance <= STREET_R
+                    distance = haversine_distance(output, y)
+                    succ = distance <= STREET_R
+                else:
+                    # Output is logits but target is GPS - fallback to avoid error
+                    # Just consider all unsuccessful for now
+                    succ = torch.zeros(output.shape[0], dtype=torch.bool, device=output.device)
+            else:
+                # Regular classification - success when prediction matches target
+                succ = torch.argmax(output, dim=1) == y
+                
             return loss, succ
 
     def update_best(self, best_crit, new_crit, best_ls, new_ls):

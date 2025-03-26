@@ -31,7 +31,7 @@ if __name__ == '__main__':
     parser.add_argument('--kernel_sparsity', default=8, type=int, help='Sparsity within each kernel (used only with --attack_type kernel)')
 
     parser.add_argument('--n_restarts', type=int, default=10)  # Number of random restarts
-    parser.add_argument('--loss', type=str, default='margin')  # loss function for the attack, options: 'margin', 'ce'
+    parser.add_argument('--loss', type=str, default='margin', choices=['margin', 'ce'])  # loss function for the attack, options: 'margin', 'ce'
     parser.add_argument('--n_ex', type=int, default=20)  # dataset size
     parser.add_argument('--bs', type=int, default=32)  # batch size
     parser.add_argument('--n_iter', type=int, default=20)  # number of iterations

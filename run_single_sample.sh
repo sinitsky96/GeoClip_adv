@@ -21,6 +21,24 @@ if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
     export CUDA_VISIBLE_DEVICES=0
 fi
 
-$PYTHON ./SparsePatches/eval.py --attack_type kernel --kernel_size 4 --model geoclip --norm L0 --bs 32 --n_ex 1  --eps_l_inf 0.1 --n_restarts 3 --n_iter 100  --dataset mixed  --device cuda
+# Run the attack with improved parameters
+$PYTHON ./SparsePatches/eval.py \
+    --attack_type kernel \
+    --kernel_size 8 \
+    --model geoclip \
+    --norm L0 \
+    --bs 4 \
+    --n_ex 1 \
+    --eps_l_inf 0.3 \
+    --n_restarts 1 \
+    --n_iter 5 \
+    --dataset mixed \
+    --device cuda \
+    --sparsity 128 \
+    --samples_per_dataset 2 \
+    --targeted \
+    --target_class "(37.090924, 25.370521)" \
+    --loss margin
 
+# Return to original directory
 cd $ORIGINAL_DIR 
