@@ -11,11 +11,11 @@ export PYTHONPATH=$PYTHONPATH:/home/daniellebed/project/GeoClip_adv
 
 
 
-#### geoclip
+# ### geoclip
 
 # # untargted geoclip, loss margin:
 
-# for k in 1 2 4 8 16 32 64 128 224
+# for k in 1 2 4 8 16 32 64 128 256
 # do
 #     echo "Running with k=$k"
 #     python ./sparse_rs/eval.py \
@@ -32,15 +32,14 @@ export PYTHONPATH=$PYTHONPATH:/home/daniellebed/project/GeoClip_adv
 # for k in 4 16
 # do
 #   eps=$k
-#   # Double eps until it exceeds 224
-#   while [ $eps -le 224 ]
+#   while [ $eps -le 256 ]
 #   do
 #     echo "Running with k=$k, eps=$eps"
 #     python ./sparse_rs/eval.py \
 #       --loss margin \
 #       --model geoclip \
 #       --norm patches \
-#       --bs 32 \
+#       --bs 150 \
 #       --n_queries 1000 \
 #       --eps "$eps" \
 #       --k "$k" \
@@ -54,7 +53,7 @@ export PYTHONPATH=$PYTHONPATH:/home/daniellebed/project/GeoClip_adv
 # # ####
 
 # # # untargted clip, loss margin:
-# for k in 1 2 4 8 16 32 64 128 224
+# for k in 1 2 4 8 16 32 64 128 256
 # do
 #     echo "Running with k=$k"
 #     python ./sparse_rs/eval.py \
@@ -71,15 +70,14 @@ export PYTHONPATH=$PYTHONPATH:/home/daniellebed/project/GeoClip_adv
 # for k in 4 16
 # do
 #   eps=$k
-#   # Double eps until it exceeds 224
-#   while [ $eps -le 224 ]
+#   while [ $eps -le 256 ]
 #   do
 #     echo "Running with k=$k, eps=$eps"
 #     python ./sparse_rs/eval.py \
 #       --loss margin \
 #       --model clip \
 #       --norm patches \
-#       --bs 32 \
+#       --bs 150 \
 #       --n_queries 1000 \
 #       --eps "$eps" \
 #       --k "$k" \
@@ -91,14 +89,14 @@ export PYTHONPATH=$PYTHONPATH:/home/daniellebed/project/GeoClip_adv
 # done
 
 
-# # # targted geoclip, loss ce, target eiffel tower:
+# # targted geoclip, loss ce, target eiffel tower:
 
-# for k in 1 2 4 8 16 32 64 128 224
+# for k in 1 2 4 8 16 32 64 128 256
 # do
 #     echo "Running with k=$k"
 #     python ./sparse_rs/eval.py \
 #         --loss margin \
-#         --model clip \
+#         --model geoclip \
 #         --norm L0 \
 #         --bs 150 \
 #         --n_queries 1000 \
@@ -109,29 +107,29 @@ export PYTHONPATH=$PYTHONPATH:/home/daniellebed/project/GeoClip_adv
 
 # done
 
-# for k in 4 16
-# do
-#   eps=$k
-#   # Double eps until it exceeds 224
-#   while [ $eps -le 224 ]
-#   do
-#     echo "Running with k=$k, eps=$eps"
-#     python ./sparse_rs/eval.py \
-#       --loss margin \
-#       --model clip \
-#       --norm patches \
-#       --bs 32 \
-#       --n_queries 1000 \
-#       --eps "$eps" \
-#       --k "$k" \
-#       --device cuda \
-#       --targeted \
-#       --target_class "(48.858093, 2.294694)"
+for k in 4 16
+do
+  eps=$k
+  # Double eps until it exceeds 224
+  while [ $eps -le 256 ]
+  do
+    echo "Running with k=$k, eps=$eps"
+    python ./sparse_rs/eval.py \
+      --loss margin \
+      --model geoclip \
+      --norm patches \
+      --bs 150 \
+      --n_queries 1000 \
+      --eps "$eps" \
+      --k "$k" \
+      --device cuda \
+      --targeted \
+      --target_class "(48.858093, 2.294694)"
 
-#     # double eps
-#     eps=$(( eps * 2 ))
-#   done
-# done
+    # double eps
+    eps=$(( eps * 2 ))
+  done
+done
 
 
 # python ./sparse_rs/eval.py --loss ce --model geoclip --targeted --target_class "(48.858093, 2.294694)" --norm L0 --bs 32 --n_queries 1000 --k 1 --device cuda
@@ -154,5 +152,5 @@ export PYTHONPATH=$PYTHONPATH:/home/daniellebed/project/GeoClip_adv
 # python ./sparse_rs/eval.py --loss margin --model geoclip --norm L0 --bs 32 --n_queries 11 --k 1 --device cuda
 # python ./sparse_rs/eval.py --loss ce --model geoclip --norm L0 --bs 32 --n_queries 11 --k 1 --device cuda
 # python ./sparse_rs/eval.py --loss ce --model geoclip --targeted --target_class "(48.858093, 2.294694)" --norm L0 --bs 32 --n_queries 11 --k 1 --device cuda
-python ./sparse_rs/eval.py --loss margin --model clip --norm L0 --bs 32 --n_queries 11 --k 1 --device cuda
+# python ./sparse_rs/eval.py --loss margin --model clip --norm L0 --bs 150 --n_queries 11 --k 1 --device cuda
 # python ./sparse_rs/eval.py --loss ce --model clip --norm L0 --bs 32 --n_queries 11 --k 1 --device cuda

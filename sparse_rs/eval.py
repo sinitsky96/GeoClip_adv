@@ -67,7 +67,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--model', default='geoclip', type=str)
     parser.add_argument('--dataset', type=str, default='Im2GPS3k', choices=['Im2GPS', 'Im2GPS3k', 'YFCC26k', 'MP_16', 'mixed'])
-    parser.add_argument('--save_dir', type=str, default='./results/new')
+    parser.add_argument('--save_dir', type=str, default='./results')
     parser.add_argument('--data_path', type=str, default="./data")
     parser.add_argument('--max_images', type=int, default=1000, help='Maximum number of images to download for MP-16 dataset')
     parser.add_argument('--samples_per_dataset', type=int, default=75, help='Number of samples to take from each dataset for mixed dataset')

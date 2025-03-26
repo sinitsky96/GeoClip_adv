@@ -1,6 +1,6 @@
 data=results/new
 attack=sparse_rs_patches
-name=sparse_rs_patches_geoclip_1_200_nqueries_3_pinit_0.30_loss_margin_eps_16_k_4_targeted_False_targetclass_None_seed_42
+name=sparse_rs_patches_geoclip_1_150_nqueries_32_pinit_0.30_loss_margin_eps_128_k_4_targeted_False_targetclass_None_seed_42
 
 mamba activate cs236207
 export PYTHONPATH=$PYTHONPATH:/home/daniellebed/project/GeoClip_adv

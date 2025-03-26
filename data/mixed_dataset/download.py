@@ -275,8 +275,8 @@ def get_mixed_dataloader(data_dir, batch_size, clip_varient=False, samples_per_d
     """
     # Create mixed dataset if it doesn't exist
     csv_path = os.path.join(data_dir, 'mixed_dataset', SAMPLED_CSV)
-    # if not os.path.exists(csv_path):
-    create_mixed_dataset(data_dir, samples_per_dataset)
+    if not os.path.exists(csv_path):
+        create_mixed_dataset(data_dir, samples_per_dataset)
     
     # Create dataset
     dataset = MixedDataset(

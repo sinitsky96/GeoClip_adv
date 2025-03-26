@@ -93,7 +93,8 @@ class RSAttack():
         self.init_patches = init_patches
         self.resample_loc = n_queries // 10 if resample_loc is None else resample_loc
         self.data_loader = data_loader
-        self.update_loc_period = update_loc_period if not update_loc_period is None else 4 if not targeted else 10
+        # self.update_loc_period = update_loc_period if not update_loc_period is None else 4 if not targeted else 10
+        self.update_loc_period = 4
         self.geoclip_attack = geoclip_attack
         self.mask_failed = mask_failed
         self.early_stop_fool = early_stop_fool
