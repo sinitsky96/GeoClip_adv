@@ -18,3 +18,4 @@ run_sparse_rs.sh
 results/
 
 per_image_dirs_single
+per_image_dirs

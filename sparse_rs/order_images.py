@@ -94,6 +94,16 @@ def save_image_as_pdf(tensor_img, pdf_path):
         pdf.savefig(fig)
     plt.close(fig)
 
+def save_image_as_png(tensor_img, filename):
+    """
+    Saves a single 3xHxW image in [0,1] as a PNG of size HxW (no margins).
+    """
+    np_img = tensor_img.permute(1,2,0).cpu().numpy()
+    plt.figure()
+    plt.imshow(np_img)
+    plt.axis('off')
+    plt.savefig(filename, bbox_inches='tight', pad_inches=0)
+    plt.close()
 
 if __name__ == "__main__":
     data_path = "./data"
@@ -117,7 +127,7 @@ if __name__ == "__main__":
 
     N = x_test.size(0)
 
-    root_output_dir = "per_image_dirs_single"
+    root_output_dir = "per_image_dirs"
     os.makedirs(root_output_dir, exist_ok=True)
 
     # For each image i, create a sub-folder and store "clean.pdf"
@@ -127,14 +137,11 @@ if __name__ == "__main__":
 
         # Save the clean image as "clean.pdf"
         clean_unnorm = unnormalize(x_test[i_idx])
-        clean_pdf_path = os.path.join(out_dir_i, "clean.pdf")
-        save_image_as_pdf(clean_unnorm, clean_pdf_path)
+        clean_pdf_path = os.path.join(out_dir_i, "clean.png")
+        save_image_as_png(clean_unnorm, clean_pdf_path)
 
 
-    adv_paths = [
-        # L0 - clip
-        "results/........",
-    ]
+    adv_paths = [ "paths..."]
 
 
     for path_pth in adv_paths:
@@ -154,11 +161,11 @@ if __name__ == "__main__":
             out_dir_i = os.path.join(root_output_dir, f"image_{i_idx}")
             adv_i = unnormalize(adv_aligned[i_idx])
             
-            pdf_filename = f"model_{model_str}_eps_{eps_str}_k_{k_str}_targeted_{tgt_str}.pdf"
+            pdf_filename = f"model_{model_str}_eps_{eps_str}_k_{k_str}_targeted_{tgt_str}.png"
             pdf_path = os.path.join(out_dir_i, pdf_filename)
 
             # Save single image in that PDF
-            save_image_as_pdf(adv_i, pdf_path)
+            save_image_as_png(adv_i, pdf_path)
 
     print("Done! Each 'image_i' folder has:")
     print("  - a clean.pdf for the clean version")
