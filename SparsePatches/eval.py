@@ -6,14 +6,39 @@ from datetime import datetime
 from torchvision import transforms
 from tqdm import tqdm
 
+# Model imports
 from geoclip.model.GeoCLIP import GeoCLIP
+from transformers import CLIPModel
+
+# Data imports
 from data.Im2GPS3k.download import load_im2gps_data, get_transforms as get_im2gps_transforms
 from data.MP_16.download import load_mp16_data, get_transforms as get_mp16_transforms
 from data.mixed_dataset.download import get_mixed_dataloader, get_transforms as get_mixed_transforms
-from transformers import CLIPModel
 
+# Attack imports
 from SparsePatches.attack_sparse_patches import AttackGeoCLIP_SparsePatches, AttackCLIP_SparsePatches, AttackGeoCLIP_SparsePatches_Kernel, AttackCLIP_SparsePatches_Kernel
-from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
+try:
+    from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
+except ImportError:
+    # Define fallback implementations
+    def haversine_distance(point1, point2):
+        """Fallback haversine distance implementation"""
+        device = point1.device
+        # Convert degrees to radians
+        lat1, lon1 = point1[..., 0] * np.pi / 180, point1[..., 1] * np.pi / 180
+        lat2, lon2 = point2[..., 0] * np.pi / 180, point2[..., 1] * np.pi / 180
+        # Haversine formula
+        dlon = lon2 - lon1
+        dlat = lat2 - lat1
+        a = torch.sin(dlat/2)**2 + torch.cos(lat1) * torch.cos(lat2) * torch.sin(dlon/2)**2
+        c = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))
+        # Radius of earth in kilometers = 6371
+        distance = 6371 * c
+        return distance
+    
+    # Default thresholds
+    CONTINENT_R = 2500.0  # 2500 km
+    STREET_R = 1.0        # 1 km
 
 
 if __name__ == '__main__':
@@ -210,6 +235,10 @@ if __name__ == '__main__':
         "sparse_patches", args.norm, args.model, args.n_ex, args.n_iter, args.eps_l_inf,
         args.loss, args.sparsity, args.targeted, args.target_class, args.seed)
     
+    # Add kernel size to param_run if using kernel attack
+    if args.attack_type == 'kernel':
+        param_run = '{}_kernel_size_{}'.format(param_run, args.kernel_size)
+    
     # Initialize the attack
     if args.attack_type == 'sparse':
         if args.model.lower() == "geoclip":
@@ -252,7 +281,7 @@ if __name__ == '__main__':
                 norm=args.norm,
                 sparsity=args.sparsity,
                 kernel_size=args.kernel_size,
-                kernel_sparsity=args.kernel_sparsity,
+                kernel_sparsity=args.kernel_size*args.kernel_size,
                 eps_l_inf=args.eps_l_inf,
                 n_iter=args.n_iter,
                 n_restarts=args.n_restarts,
@@ -270,7 +299,7 @@ if __name__ == '__main__':
                 norm=args.norm,
                 sparsity=args.sparsity,
                 kernel_size=args.kernel_size,
-                kernel_sparsity=args.kernel_sparsity,
+                kernel_sparsity=args.kernel_size*args.kernel_size,
                 eps_l_inf=args.eps_l_inf,
                 n_iter=args.n_iter,
                 n_restarts=args.n_restarts,
@@ -357,7 +386,7 @@ if __name__ == '__main__':
             print(f"\nRunning attack on {len(ind_to_fool)} correctly classified examples")
             print(f"Attack type: {args.attack_type}, Norm: {args.norm}, Sparsity: {args.sparsity}")
             if args.attack_type == 'kernel':
-                print(f"Kernel size: {args.kernel_size}, Kernel sparsity: {args.kernel_sparsity}")
+                print(f"Kernel size: {args.kernel_size}, Kernel sparsity: {args.kernel_size*args.kernel_size}")
             print(f"Number of batches: {n_batches}, Batch size: {bs}")
             
             # Store all distances for final statistics
