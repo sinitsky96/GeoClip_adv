@@ -2,9 +2,12 @@ import numpy as np
 import math
 import itertools
 import torch
-import torch.nn.functional as F
-from tqdm import tqdm
-from attacks.pgd_attacks.attack import Attack
+from .attack import Attack
+try:
+    from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
+except ImportError:
+    # Use the fallback from attack.py
+    from .attack import haversine_distance, CONTINENT_R, STREET_R
 
 
 class PGDTrim(Attack):
@@ -185,16 +188,58 @@ class PGDTrim(Attack):
         return rest_l0_copy_indices
     
     def compute_l0_norms(self):
-        pixels_log_size = int(np.log2(self.n_data_pixels))
-        max_trim_size = 2 ** pixels_log_size
-        if max_trim_size < self.n_data_pixels:
-            n_trim_options = int(np.ceil(np.log2(max_trim_size / self.sparsity)))
-            all_l0_norms = [self.n_data_pixels] + [max_trim_size >> step for step in range(n_trim_options)] + [
-                self.sparsity]
-        else:
-            n_trim_options = int(np.ceil(np.log2(self.n_data_pixels / self.sparsity))) - 1
-            all_l0_norms = [self.n_data_pixels >> step for step in range(n_trim_options + 1)] + [self.sparsity]
-        return n_trim_options, all_l0_norms
+        try:
+            pixels_log_size = int(np.log2(self.n_data_pixels))
+            max_trim_size = 2 ** pixels_log_size
+            
+            if max_trim_size < self.n_data_pixels:
+                n_trim_options = int(np.ceil(np.log2(max_trim_size / self.sparsity)))
+                steps = [max_trim_size >> step for step in range(n_trim_options)]
+                # Ensure steps are decreasing and above sparsity
+                steps = [s for s in steps if s > self.sparsity]
+                all_l0_norms = [self.n_data_pixels] + steps + [self.sparsity]
+            else:
+                n_trim_options = int(np.ceil(np.log2(self.n_data_pixels / self.sparsity))) - 1
+                steps = [self.n_data_pixels >> step for step in range(n_trim_options + 1)]
+                # Ensure steps are decreasing and above sparsity
+                steps = [s for s in steps if s > self.sparsity]
+                all_l0_norms = steps + [self.sparsity]
+                
+            # Remove duplicates while preserving order
+            all_l0_norms = list(dict.fromkeys(all_l0_norms))
+            
+            # Ensure we have at least 2 elements
+            if len(all_l0_norms) < 2:
+                all_l0_norms = [self.n_data_pixels, self.sparsity]
+                
+            n_trim_options = len(all_l0_norms) - 2
+            
+            if self.verbose:
+                print(f"L0 norms: {all_l0_norms}")
+                print(f"Number of trim options: {n_trim_options}")
+                
+            return n_trim_options, all_l0_norms
+        except Exception as e:
+            if self.verbose:
+                print(f"Error in compute_l0_norms: {e}")
+                print("Using fallback L0 norms")
+            
+            # Fallback approach with direct sparsity steps
+            max_trim_steps = min(4, self.max_trim_steps)
+            if max_trim_steps <= 1:
+                all_l0_norms = [self.n_data_pixels, self.sparsity]
+                n_trim_options = 0
+            else:
+                # Create a linear progression from n_data_pixels to sparsity
+                step_size = (self.n_data_pixels - self.sparsity) / max_trim_steps
+                steps = [int(self.n_data_pixels - i * step_size) for i in range(max_trim_steps)]
+                all_l0_norms = steps + [self.sparsity]
+                n_trim_options = len(all_l0_norms) - 2
+            
+            if self.verbose:
+                print(f"Fallback L0 norms: {all_l0_norms}")
+            
+            return n_trim_options, all_l0_norms
     
     def compute_trim_options(self):
         n_trim_options, all_l0_norms = self.compute_l0_norms()
@@ -504,7 +549,7 @@ class PGDTrim(Attack):
     
     def mask_opt_none(self, x, y, mask, dense_pert):
         sparse_pert = self.apply_mask_method(mask, dense_pert)
-        output, loss = self.test_pert(x, y, sparse_pert)
+        output, loss = self.eval_pert(x, y, sparse_pert)
         return loss
     
     def mask_opt_pgd(self, x, y, mask, dense_pert):
@@ -592,183 +637,133 @@ class PGDTrim(Attack):
                                 mask_sample_method, mask_prep_data, n_trim_pixels_tensor, n_mask_samples)
 
     def pgd(self, x, y, mask, dense_pert, best_sparse_pert, best_loss, best_succ, dpo_mean, dpo_std, n_iter=None):
-        if n_iter is None:
-            n_iter = self.n_iter
-
         with torch.no_grad():
-            # Ensure all tensors have proper dimensions
-            if len(dense_pert.shape) != 4:
-                raise ValueError(f"Expected dense_pert to have 4 dimensions, got shape {dense_pert.shape}")
-            if len(mask.shape) != 4:
-                raise ValueError(f"Expected mask to have 4 dimensions, got shape {mask.shape}")
-                
-            best_sparse_pert = best_sparse_pert.clone().detach()
-            best_loss = best_loss.clone().detach()
-            best_succ = best_succ.clone().detach()
-            dense_pert = dense_pert.clone().detach().requires_grad_(True)
-
-            if self.report_info:
+            report_info = self.report_info
+            if n_iter is None:
+                n_iter = self.n_iter
+            else:
+                report_info = False
+            sparse_pert = self.apply_mask_method(mask, dense_pert)
+            loss, succ = self.eval_pert(x, y, sparse_pert)
+            self.update_best(best_loss, loss,
+                             [best_sparse_pert, best_succ],
+                             [sparse_pert, succ])
+            
+            if report_info:
                 all_best_succ = torch.zeros(n_iter + 1, self.batch_size, dtype=torch.bool, device=self.device)
                 all_best_loss = torch.zeros(n_iter + 1, self.batch_size, dtype=self.dtype, device=self.device)
                 all_best_succ[0] = best_succ
                 all_best_loss[0] = best_loss
 
-        # Create PGD iteration progress bar if verbose
-        pgd_pbar = None
-        if self.verbose and n_iter > 1:
-            pgd_pbar = tqdm(range(n_iter), desc="PGD iterations", leave=False)
-
-        for k in (pgd_pbar if pgd_pbar is not None else range(n_iter)):
-            if dense_pert.grad is not None:
-                dense_pert.grad.data.zero_()
-
-            adv_x = x + dense_pert
-            
-            # Create a handle for computing gradients
-            try:
-                # Try the standard approach first - call model with adv_x and compute criterion
-                adv_x.requires_grad_(True)
-                output = self.model(adv_x)
-                loss_ind = self.criterion(output, y)
-                loss = loss_ind.sum()
-                
-                # Check if loss is differentiable (has grad_fn)
-                if not hasattr(loss, 'grad_fn') or loss.grad_fn is None:
-                    raise RuntimeError("Loss is not differentiable")
-                
-                # Compute gradients
-                loss.backward()
-                
-                # Transfer gradients from adv_x to dense_pert
-                dense_pert.grad = adv_x.grad
-                adv_x.requires_grad_(False)
-            except Exception as e:
-                # If standard approach fails, use a surrogate loss function
-                if self.verbose:
-                    print(f"Using surrogate loss due to: {str(e)}")
-                
-                # Reset any existing gradients
-                if dense_pert.grad is not None:
-                    dense_pert.grad.data.zero_()
-                
-                try:
-                    # Create completely new tensors for surrogate calculation
-                    # This ensures a clean gradient path
-                    with torch.enable_grad():
-                        # Create a new tensor that requires gradients
-                        noise = torch.randn_like(dense_pert, requires_grad=False)
-                        fresh_pert = dense_pert.detach().clone().requires_grad_(True)
-                        
-                        # Create a simple but effective surrogate loss
-                        surrogate = fresh_pert * noise
-                        surrogate_loss = torch.sum(surrogate**2)
-                        
-                        # Compute gradients explicitly
-                        surrogate_loss.backward()
-                        
-                        # Transfer the gradients to the original tensor
-                        if dense_pert.grad is None:
-                            dense_pert.grad = fresh_pert.grad.clone()
-                        else:
-                            dense_pert.grad.data.copy_(fresh_pert.grad.data)
-                
-                except Exception as sub_e:
-                    # If surrogate loss also fails, use a simple direct gradient
-                    print(f"Surrogate loss failed: {sub_e}. Using direct gradient.")
+        self.set_dpo(dpo_mean, dpo_std)
+        self.model.eval()
+        with torch.enable_grad():
+            pert = dense_pert.clone().detach()
+            for k in range(1, n_iter + 1):
+                pert.requires_grad_()
+                mask.requires_grad_(False)
+                sparse_pert = self.apply_mask_method(mask, pert)
+                train_loss = self.criterion(self.model.forward(x + self.dpo(sparse_pert)), y)
+                grad = torch.autograd.grad(train_loss.mean(), [pert])[0].detach()
+    
+                with torch.no_grad():
+                    pert = self.step(pert, grad)
+                    sparse_pert = self.apply_mask_method(mask, pert)
+                    eval_loss, succ = self.eval_pert(x, y, sparse_pert)
+                    self.update_best(best_loss, eval_loss,
+                                     [dense_pert, best_sparse_pert, best_succ],
+                                     [pert, sparse_pert, succ])
                     
-                    # Create a direct gradient
-                    if dense_pert.grad is None:
-                        dense_pert.grad = torch.randn_like(dense_pert) * 0.01
-                    else:
-                        dense_pert.grad.data.copy_(torch.randn_like(dense_pert) * 0.01)
+                    if report_info:
+                        all_best_succ[k] = best_succ | all_best_succ[k - 1]
+                        all_best_loss[k] = best_loss
 
-            with torch.no_grad():
-                sparse_pert = self.apply_mask(mask, dense_pert)
-                loss_ind_sparse, succ_ind_sparse = self.eval_pert(x, y, pert=sparse_pert)
-
-                mask_idxs = (loss_ind_sparse > best_loss)
-                if mask_idxs.any():
-                    best_loss[mask_idxs] = loss_ind_sparse[mask_idxs]
-                    best_sparse_pert[mask_idxs] = sparse_pert[mask_idxs]
-                    best_succ = best_succ | succ_ind_sparse
-                
-                # Update progress bar if used
-                if pgd_pbar is not None:
-                    pgd_pbar.set_postfix({
-                        "loss": f"{loss_ind_sparse.mean().item():.4f}",
-                        "success": f"{best_succ.float().mean().item():.2%}"
-                    })
-
-                if self.report_info:
-                    all_best_succ[k] = best_succ | all_best_succ[k - 1]
-                    all_best_loss[k] = best_loss
-
-            # Dense grad update step
-            with torch.no_grad():
-                if self.dropout_dist == 'gaussian':
-                    grad_dpo = torch.randn_like(dense_pert.grad.data)
-                    if self.dropout_std_bernoulli:
-                        dpo_mask = torch.bernoulli(torch.ones_like(dense_pert.grad.data) * 0.2)
-                        grad_dpo = grad_dpo * dpo_mask
-                    dense_pert.grad.data += grad_dpo * dpo_std
-
-                grad_step_size = self.alpha * (
-                        self.w_iter_ratio * ((k + 1) / self.n_iter) + (1 - self.w_iter_ratio))
-                # Only update if we have gradients
-                if dense_pert.grad is not None:
-                    grad_sign = dense_pert.grad.data.sign()
-                    dense_pert.data = dense_pert.data - grad_step_size * grad_sign
-
-                # Project to L-inf norm
-                if self.eps > 0.0:
-                    dense_pert.data = torch.clamp(dense_pert.data, -self.eps, self.eps)
-
-                # Project to valid perturbation domain
-                x_pert = x + dense_pert
-                adv_delta = torch.clamp(x_pert, 0.0, 1.0) - x
-                dense_pert.data = adv_delta
-
-        # Close PGD progress bar if used
-        if pgd_pbar is not None:
-            pgd_pbar.close()
-
-        if self.report_info:
+        if report_info:
             return all_best_succ, all_best_loss
         return None, None
 
-    def perturb(self, x, y, targeted=False):
-        # Validate input tensor dimensions
-        if x.dim() != 4:
-            raise ValueError(f"Input tensor must have 4 dimensions (batch, channels, height, width), got shape {x.shape}")
+    def eval_pert(self, x, y, pert):
+        """Evaluate perturbation and return loss and success indicator"""
+        try:
+            output = self.model.forward(x + pert)
+            loss = self.criterion(output, y)
             
+            # Initialize success tensor with correct size
+            succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+            
+            # For GeoCLIP models, determine success based on haversine distance
+            if output.dim() == 2 and output.shape[1] == 2 and y.dim() == 2 and y.shape[1] == 2:
+                # This is likely GPS coordinate output - determine success based on distance
+                distance = haversine_distance(output, y)
+                
+                if hasattr(self, 'targeted_mul') and self.targeted_mul < 0:  # Targeted attack
+                    succ = distance <= STREET_R  # Success if distance is small
+                else:  # Untargeted attack
+                    succ = distance > CONTINENT_R  # Success if distance is large
+            
+            # Get success indicator if available from criterion
+            elif hasattr(self.criterion, 'get_success'):
+                try:
+                    criterion_succ = self.criterion.get_success()
+                    
+                    # Special handling for image-shaped success tensors
+                    if len(criterion_succ.shape) > 1:  # Has at least 2 dimensions
+                        print(f"Warning: Success tensor has image shape {criterion_succ.shape}, expected batch size {self.batch_size}")
+                        # Just create a new success tensor with correct shape
+                        succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+                    elif criterion_succ.numel() == 0:
+                        # Empty tensor case
+                        succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+                    else:
+                        # Normal case: tensor has correct number of elements
+                        succ = criterion_succ.reshape(self.batch_size)
+                except Exception as e:
+                    print(f"Error getting success indicator: {e}")
+            
+            # Ensure loss has correct shape
+            if loss.numel() == 1:
+                loss = loss.expand(self.batch_size)
+            else:
+                loss = loss.reshape(self.batch_size)
+                
+        except Exception as e:
+            print(f"Error in eval_pert: {e}")
+            # Create fallback tensors in case of error
+            loss = torch.ones(self.batch_size, device=self.device)
+            succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+        
+        return loss, succ
+
+    def perturb(self, x, y, targeted=False):
         with (torch.no_grad()):
             self.set_params(x, targeted)
+            
+            # Get clean loss and success
+            self.clean_loss, self.clean_succ = self.eval_pert(x, y, pert=torch.zeros_like(x))
+            
+            # Ensure tensors have correct dimensions (with additional error handling)
             try:
-                # Add more debugging output
-                print(f"Starting attack with: model={type(self.model)}, x.shape={x.shape}, y.shape={y.shape}, device={x.device}")
-                print(f"Model input shape expected: {self.data_shape}, Output type: {type(self.model(x))}")
-                
-                self.clean_loss, self.clean_succ = self.eval_pert(x, y, pert=torch.zeros_like(x))
-                best_l0_perts = torch.zeros_like(x).unsqueeze(0).repeat(self.n_l0_norms, 1, 1, 1, 1)
-                best_l0_loss = self.clean_loss.clone().detach().unsqueeze(0).repeat(self.n_l0_norms, 1)
-                best_l0_succ = self.clean_succ.clone().detach().unsqueeze(0).repeat(self.n_l0_norms, 1)
-                best_l0_pixels_crit = torch.zeros(self.mask_shape, dtype=self.dtype, device=self.device
-                                                ).unsqueeze(0).repeat(self.n_l0_norms, 1, 1, 1, 1)
-                best_l0_pixels_mask = self.mask_zeros_flat.clone().detach(
-                ).view(self.mask_shape).unsqueeze(0).repeat(self.n_l0_norms, 1, 1, 1, 1)
-                best_l0_pixels_loss = torch.zeros_like(best_l0_loss)
+                clean_loss = self.clean_loss.reshape(self.batch_size)
+                clean_succ = self.clean_succ.reshape(self.batch_size)
+            except RuntimeError as e:
+                print(f"Error reshaping tensors: {e}")
+                print(f"clean_loss shape: {self.clean_loss.shape}, clean_succ shape: {self.clean_succ.shape}")
+                # Create tensors with correct shape as fallback
+                clean_loss = torch.zeros(self.batch_size, device=self.device)
+                clean_succ = torch.zeros(self.batch_size, device=self.device)
+            
+            best_l0_perts = torch.zeros_like(x).unsqueeze(0).repeat(self.n_l0_norms, 1, 1, 1, 1)
+            best_l0_loss = clean_loss.clone().detach().unsqueeze(0).repeat(self.n_l0_norms, 1)
+            best_l0_succ = clean_succ.clone().detach().unsqueeze(0).repeat(self.n_l0_norms, 1)
+            best_l0_pixels_crit = torch.zeros(self.mask_shape, dtype=self.dtype, device=self.device
+                                              ).unsqueeze(0).repeat(self.n_l0_norms, 1, 1, 1, 1)
+            best_l0_pixels_mask = self.mask_zeros_flat.clone().detach(
+            ).view(self.mask_shape).unsqueeze(0).repeat(self.n_l0_norms, 1, 1, 1, 1)
+            best_l0_pixels_loss = torch.zeros_like(best_l0_loss)
 
-                if self.report_info:
-                    all_best_succ = torch.zeros(self.n_l0_norms, self.n_restarts, self.n_iter + 1, self.batch_size, dtype=torch.bool, device=self.device)
-                    all_best_loss = torch.zeros(self.n_l0_norms, self.n_restarts, self.n_iter + 1, self.batch_size, dtype=self.dtype, device=self.device)
-            except Exception as e:
-                print(f"Error in initialization phase: {e}")
-                raise
-
-        # Create restart progress bar
-        restart_pbar = None
-        if self.verbose:
-            restart_pbar = tqdm(range(self.n_restarts), desc="Attack restarts", leave=True)
+            if self.report_info:
+                all_best_succ = torch.zeros(self.n_l0_norms, self.n_restarts, self.n_iter + 1, self.batch_size, dtype=torch.bool, device=self.device)
+                all_best_loss = torch.zeros(self.n_l0_norms, self.n_restarts, self.n_iter + 1, self.batch_size, dtype=self.dtype, device=self.device)
 
         for rest in range(self.n_restarts):
             with torch.no_grad():
@@ -782,15 +777,8 @@ class PGDTrim(Attack):
                     dense_pert = self.random_initialization()
                 else:
                     dense_pert = torch.zeros_like(x)
-            
-            # Create trim steps progress bar
-            trim_pbar = None
-            if self.verbose:
-                trim_pbar = tqdm(enumerate(trim_steps), total=len(trim_steps), 
-                                desc=f"Sparsity steps (restart {rest+1}/{self.n_restarts})", 
-                                leave=False)
 
-            for trim_idx, n_trim_pixels in (trim_pbar if trim_pbar is not None else enumerate(trim_steps)):
+            for trim_idx, n_trim_pixels in enumerate(trim_steps):
                 with torch.no_grad():
                     l0_idx = l0_indices[trim_idx]
                     trim_l0_idx = l0_indices[trim_idx + 1]
@@ -808,9 +796,6 @@ class PGDTrim(Attack):
                     n_mask_samples = steps_n_mask_samples[trim_idx]
                     mask_trim = steps_mask_trim[trim_idx]
                     
-                    if trim_pbar is not None:
-                        trim_pbar.set_postfix({"sparsity": f"{n_trim_pixels}", "pixels": f"{n_trim_pixels:,}"})
-                    
                 no_trim_all_best_succ, no_trim_all_best_loss\
                     = self.pgd(x, y, mask, dense_pert, best_sparse_pert, best_loss, best_succ, dpo_mean, dpo_std)
                     
@@ -820,35 +805,25 @@ class PGDTrim(Attack):
                         all_best_loss[l0_idx, rest] = no_trim_all_best_loss
                     if self.verbose:
                         pert_l0 = best_sparse_pert.abs().view(self.batch_size, self.data_channels, -1).sum(dim=1).count_nonzero(1)
+                        print("Finished optimizing sparse perturbation on predetermined pixels")
+                        print('max L0 in perturbation: ' + str(pert_l0.max().item()))
                         pert_l_inf = (best_sparse_pert.abs() / self.data_RGB_size).view(self.batch_size, -1).max(1)[0]
-                        if trim_pbar is not None:
-                            trim_pbar.set_postfix({"sparsity": f"{n_trim_pixels}", 
-                                                 "L0": f"{pert_l0.max().item():.0f}", 
-                                                 "L∞": f"{pert_l_inf.max():.5f}"})
+                        print('max L_inf in perturbation: {:.5f}, nan in tensor: {}, max: {:.5f}, min: {:.5f}'.format(
+                            pert_l_inf.max(), (best_sparse_pert != best_sparse_pert).sum(), best_sparse_pert.max(), best_sparse_pert.min()))
                     
                     mask = self.trim_pert_pixels(x, y, mask, dense_pert, best_sparse_pert,
                                                  best_pixels_crit, best_pixels_mask, best_pixels_loss,
                                                  mask_prep, mask_sample, mask_trim,
                                                  n_trim_pixels, trim_ratio, n_mask_samples)
             
-            # Close trim progress bar if used
-            if trim_pbar is not None:
-                trim_pbar.close()
-            
             with torch.no_grad():
                 l0_idx = l0_indices[-1]
                 best_sparse_pert = best_l0_perts[l0_idx]
                 best_loss = best_l0_loss[l0_idx]
                 best_succ = best_l0_succ[l0_idx]
-            
-            # Final optimization without pixel trimming
-            if self.verbose:
-                print("Final optimization without pixel trimming...")
-                
             no_trim_all_best_succ, no_trim_all_best_loss \
                 = self.pgd(x, y, mask, dense_pert, best_sparse_pert, best_loss, best_succ,
                            self.post_trim_dpo_mean, self.post_trim_dpo_std)
-            
             with torch.no_grad():
                 if self.report_info:
                     all_best_succ[l0_idx, rest] = no_trim_all_best_succ
@@ -859,17 +834,12 @@ class PGDTrim(Attack):
 
                 if self.verbose:
                     pert_l0 = best_sparse_pert.abs().view(self.batch_size, self.data_channels, -1).sum(dim=1).count_nonzero(1)
+                    print("Finished optimizing perturbation without pixel trimming")
+                    print('max L0 in perturbation: ' + str(pert_l0.max().item()))
                     pert_l_inf = (best_sparse_pert.abs() / self.data_RGB_size).view(self.batch_size, -1).max(1)[0]
-                    if restart_pbar is not None:
-                        restart_pbar.set_postfix({
-                            "L0": f"{pert_l0.max().item():.0f}", 
-                            "L∞": f"{pert_l_inf.max():.5f}"
-                        })
-                        restart_pbar.update(1)
-
-        # Close restart progress bar if used
-        if restart_pbar is not None:
-            restart_pbar.close()
+                    print('max L_inf in perturbation: {:.5f}, nan in tensor: {}, max: {:.5f}, min: {:.5f}'.format(
+                        pert_l_inf.max(), (best_sparse_pert != best_sparse_pert).sum(), best_sparse_pert.max(),
+                        best_sparse_pert.min()))
 
         if self.report_info:
             return best_l0_perts, all_best_succ, all_best_loss
