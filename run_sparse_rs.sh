@@ -130,3 +130,19 @@ do
     eps=$(( eps * 2 ))
   done
 done
+
+
+
+# # single targeted run:
+#   echo "Running with k=$k, eps=$eps"
+#   python ./sparse_rs/eval.py \
+#     --loss margin \
+#     --model geoclip \
+#     --norm patches \
+#     --bs 150 \
+#     --n_queries 1000 \
+#     --eps 256 \
+#     --k 16 \
+#     --device cuda \
+#     --targeted \
+#     --target_class "(48.858093, 2.294694)"
