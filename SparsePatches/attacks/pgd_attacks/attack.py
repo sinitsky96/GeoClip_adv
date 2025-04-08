@@ -1,30 +1,13 @@
 import os
-import numpy as np
-import time
+import sys
+
+# Add the project root directory to the Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(project_root)
 import torch
 from torch.nn import functional as F
-try:
-    from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
-except ImportError:
-    # Define fallback values if import fails
-    def haversine_distance(point1, point2):
-        """Fallback haversine distance implementation"""
-        device = point1.device
-        # Convert degrees to radians
-        lat1, lon1 = point1[..., 0] * np.pi / 180, point1[..., 1] * np.pi / 180
-        lat2, lon2 = point2[..., 0] * np.pi / 180, point2[..., 1] * np.pi / 180
-        # Haversine formula
-        dlon = lon2 - lon1
-        dlat = lat2 - lat1
-        a = torch.sin(dlat/2)**2 + torch.cos(lat1) * torch.cos(lat2) * torch.sin(dlon/2)**2
-        c = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))
-        # Radius of earth in kilometers = 6371
-        distance = 6371 * c
-        return distance
-    
-    # Default thresholds
-    CONTINENT_R = 2500.0  # 2500 km
-    STREET_R = 1.0        # 1 km
+from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
+
 
 
 class Attack:
@@ -69,6 +52,10 @@ class Attack:
             self.alpha = self.eps / self.n_iter
         self.a_abs = self.alpha.abs()
         self.rand_init = pgd_args['rand_init']
+        
+        # Initialize targeted attribute (will be set by AdvRunner)
+        self.targeted = False
+        
         self.targeted_mul = None
         self.multiplier = None
         self.eval_pert = None
@@ -163,79 +150,74 @@ class Attack:
         return grad.sign()
     
     def test_pert(self, x, y, pert):
-        with torch.no_grad():
-            output = self.model.forward(x + pert)
-            loss = self.targeted_mul * self.criterion(output, y)
-            return output, loss
+        """Test a perturbation by getting model predictions and computing loss"""
+        # Get predictions from GeoClip
+        output, _ = self.model.predict_from_tensor(x + pert)
+        
+        # Calculate distances between predicted and target coordinates
+        distances = haversine_distance(output, y)
+        
+        # For untargeted attacks, we want to maximize distance (negative for gradient ascent)
+        # For targeted attacks, we want to minimize distance
+        # We use a margin-based loss that encourages distances to be either above CONTINENT_R (untargeted)
+        # or below STREET_R (targeted)
+        if not self.targeted:
+            # For untargeted attacks, we want distances > CONTINENT_R
+            # loss = max(0, CONTINENT_R - distance) per example
+            margin = F.relu(torch.tensor(CONTINENT_R, device=distances.device) - distances)
+            loss = -margin  # Negative because we want to maximize distance, keep per-example values
+        else:
+            # For targeted attacks, we want distances < STREET_R
+            # loss = max(0, distance - STREET_R) per example
+            margin = F.relu(distances - torch.tensor(STREET_R, device=distances.device))
+            loss = margin  # Keep per-example values
+        
+        return output, loss
 
     def eval_pert_untargeted(self, x, y, pert):
+        """Evaluate perturbation for untargeted attack (maximize distance)"""
         with torch.no_grad():
-            try:
-                output, loss = self.test_pert(x, y, pert)
-                
-                # Check if we're dealing with GPS coordinates (shape [batch_size, 2])
-                if y.dim() == 2 and y.shape[1] == 2:
-                    # Ensure output is also coordinates (not logits)
-                    if output.dim() == 2 and output.shape[1] == 2:
-                        # For GPS coordinates, success is when distance > CONTINENT_R
-                        distance = haversine_distance(output, y)
-                        succ = distance > CONTINENT_R
-                    else:
-                        # Output is logits but target is GPS - fallback to avoid error
-                        # Just consider all unsuccessful for now
-                        succ = torch.zeros(output.shape[0], dtype=torch.bool, device=output.device)
-                else:
-                    # Regular classification - success when prediction doesn't match target
-                    if output.dim() == 2 and output.dim() > 1:  # Check if output is logits
-                        succ = torch.argmax(output, dim=1) != y
-                    else:
-                        # If output doesn't look like logits, consider all unsuccessful
-                        succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-            except Exception as e:
-                print(f"Error in eval_pert_untargeted: {e}")
-                # Create fallback tensors in case of error
-                loss = torch.ones(self.batch_size, device=self.device)
-                succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-                
+            output, loss = self.test_pert(x, y, pert)
+            
+            # Calculate distances between predicted and true coordinates
+            distances = haversine_distance(output, y)
+            
+            # Success = prediction far from ground truth
+            succ = distances > CONTINENT_R
             return loss, succ
 
     def eval_pert_targeted(self, x, y, pert):
+        """Evaluate perturbation for targeted attack (minimize distance)"""
         with torch.no_grad():
-            try:
-                output, loss = self.test_pert(x, y, pert)
-                
-                # Check if we're dealing with GPS coordinates (shape [batch_size, 2])
-                if y.dim() == 2 and y.shape[1] == 2:
-                    # Ensure output is also coordinates (not logits)
-                    if output.dim() == 2 and output.shape[1] == 2:
-                        # For GPS coordinates, success is when distance <= STREET_R
-                        distance = haversine_distance(output, y)
-                        succ = distance <= STREET_R
-                    else:
-                        # Output is logits but target is GPS - fallback to avoid error
-                        # Just consider all unsuccessful for now
-                        succ = torch.zeros(output.shape[0], dtype=torch.bool, device=output.device)
-                else:
-                    # Regular classification - success when prediction matches target
-                    if output.dim() == 2 and output.dim() > 1:  # Check if output is logits
-                        succ = torch.argmax(output, dim=1) == y
-                    else:
-                        # If output doesn't look like logits, consider all unsuccessful
-                        succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-            except Exception as e:
-                print(f"Error in eval_pert_targeted: {e}")
-                # Create fallback tensors in case of error
-                loss = torch.ones(self.batch_size, device=self.device)
-                succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-                
+            output, loss = self.test_pert(x, y, pert)
+            
+            # Calculate distances between predicted and target coordinates
+            distances = haversine_distance(output, y)
+            
+            # Success = prediction close to target
+            succ = distances <= STREET_R
             return loss, succ
 
     def update_best(self, best_crit, new_crit, best_ls, new_ls):
-        improve = new_crit.ge(best_crit)
-        best_crit[improve] = new_crit[improve]
-        for idx, best in enumerate(best_ls):
-            new = new_ls[idx]
-            best[improve] = new[improve]
+        with torch.no_grad():
+            improve = new_crit.lt(best_crit)
+            best_crit[improve] = new_crit[improve]
+            for best, new in zip(best_ls, new_ls):
+                if best.dim() > new.dim():
+                    # Reshape new tensor to match best tensor dimensions
+                    new_shape = [-1] + [1] * (best.dim() - new.dim())
+                    new_reshaped = new.view(*new_shape)
+                    # Reshape improve tensor to match broadcasting dimensions
+                    improve_shape = list(improve.shape) + [1] * (best.dim() - improve.dim())
+                    improve_reshaped = improve.view(*improve_shape)
+                    best_updated = torch.where(improve_reshaped, new_reshaped, best)
+                else:
+                    # Reshape improve tensor to match the target dimensions
+                    improve_expanded = improve
+                    for _ in range(best.dim() - improve.dim()):
+                        improve_expanded = improve_expanded.unsqueeze(-1)
+                    best_updated = torch.where(improve_expanded, new.detach(), best.detach())
+                best.copy_(best_updated)
 
     def no_dpo(self, pert):
         return pert

@@ -74,18 +74,17 @@ class GeoCLIP(nn.Module):
         Returns:
             logits_per_image (torch.Tensor): Logits per image of shape (n, m)
         """
-
         # Compute Features
         image_features = self.image_encoder(image)
         location_features = self.location_encoder(location)
         logit_scale = self.logit_scale.exp()
         
-        # Normalize features
+        # Normalize features while preserving gradients
         image_features = F.normalize(image_features, dim=1)
         location_features = F.normalize(location_features, dim=1)
         
-        # Cosine similarity (Image Features & Location Features)
-        logits_per_image = logit_scale * (image_features @ location_features.t())
+        # Compute similarity while preserving gradients
+        logits_per_image = logit_scale * torch.matmul(image_features, location_features.t())
 
         return logits_per_image
 
@@ -117,8 +116,6 @@ class GeoCLIP(nn.Module):
 
         return top_pred_gps, top_pred_prob
     
-
-    @torch.no_grad()
     def predict_logits(self, image_tensor):
         # Ensure proper dimensions (add batch dimension if needed)
         if len(image_tensor.shape) == 3:
@@ -128,14 +125,10 @@ class GeoCLIP(nn.Module):
         image_tensor = image_tensor.to(self.device)
         
         gps_gallery = self.gps_gallery.to(self.device)
-        # print(f"gps_gallery {gps_gallery.device}")
-        # print(f"self {self.device}")
         
         logits_per_image = self.forward(image_tensor, gps_gallery)
         return logits_per_image
     
-
-    @torch.no_grad()
     def predict_from_tensor(self, image_tensor, top_k=1, apply_transforms=False):
         """Given an image tensor, predict the top k GPS coordinates
         
@@ -149,53 +142,60 @@ class GeoCLIP(nn.Module):
             top_pred_gps (torch.Tensor): Top k GPS coordinates of shape (k, 2)
             top_pred_prob (torch.Tensor): Top k GPS probabilities of shape (k,)
         """
-        with torch.no_grad():
-            # Ensure proper dimensions (add batch dimension if needed)
-            if len(image_tensor.shape) == 3:
-                image_tensor = image_tensor.unsqueeze(0)
-                
-            # Move to the correct device
+        # Ensure proper dimensions (add batch dimension if needed)
+        if len(image_tensor.shape) == 3:
+            image_tensor = image_tensor.unsqueeze(0)
+            
+        # Move to the correct device while preserving gradients
+        if not image_tensor.is_cuda:
             image_tensor = image_tensor.to(self.device)
+        
+        # Apply transformations if needed
+        if apply_transforms:
+            from torchvision import transforms
             
-            # Apply transformations if needed
-            if apply_transforms:
-                from torchvision import transforms
+            # Create transformation pipeline matching what CLIP expects
+            transform = transforms.Compose([
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+            ])
+            
+            # Apply transforms while maintaining gradients
+            b, c, h, w = image_tensor.shape
+            transformed_tensors = []
+            
+            for i in range(b):
+                img = image_tensor[i]
+                # Apply transforms that work directly on tensors
+                transformed = transform(img)
+                transformed_tensors.append(transformed)
                 
-                # Create transformation pipeline matching what CLIP expects
-                transform = transforms.Compose([
-                    transforms.Resize(256),
-                    transforms.CenterCrop(224),
-                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-                ])
-                
-                # For PIL-like transformations, convert to PIL and back
-                b, c, h, w = image_tensor.shape
-                transformed_tensors = []
-                
-                for i in range(b):
-                    img = image_tensor[i]
-                    # Apply transforms that work directly on tensors
-                    # (Resize and CenterCrop actually work on tensors in newer PyTorch versions)
-                    transformed = transform(img)
-                    transformed_tensors.append(transformed)
-                    
-                image_tensor = torch.stack(transformed_tensors)
-            
-            gps_gallery = self.gps_gallery.to(self.device)     
-            
-            logits_per_image = self.forward(image_tensor, gps_gallery)
-            probs_per_image = logits_per_image.softmax(dim=-1)
-            
-            # Get top k predictions
-            top_pred = torch.topk(probs_per_image, top_k, dim=1)
-            top_pred_gps = gps_gallery[top_pred.indices]
-            top_pred_prob = top_pred.values
+            image_tensor = torch.stack(transformed_tensors)
+        
+        # Move GPS gallery to device and ensure it's properly formatted
+        gps_gallery = self.gps_gallery.to(self.device)
+        
+        # Forward pass with gradient tracking
+        logits_per_image = self.forward(image_tensor, gps_gallery)
+        
+        # Convert logits to probabilities while maintaining gradients
+        probs_per_image = F.softmax(logits_per_image, dim=-1)
+        
+        # Get top k predictions
+        top_pred_values, top_pred_indices = torch.topk(probs_per_image, top_k, dim=1)
+        
+        # For clean predictions, use direct indexing
+        top_pred_gps = gps_gallery[top_pred_indices]
+        
+        # For attack mode (when requires_grad is True), compute weighted coordinates
+        if image_tensor.requires_grad:
+            # Compute weighted sum of all GPS coordinates
+            weighted_gps = torch.matmul(probs_per_image, gps_gallery)
+            top_pred_gps = weighted_gps  # Use weighted coordinates for gradient flow
+        
+        if top_k == 1:
+            top_pred_gps = top_pred_gps.squeeze(1)  # removes the singleton top_k dimension
+            top_pred_values = top_pred_values.squeeze(1)  # similarly for the probabilities
 
-            # print(f"top_pred_gps shape: {top_pred_gps.shape}")
-
-            if top_k == 1:
-                top_pred_gps = top_pred_gps.squeeze(1)  # removes the singleton top_k dimension: [100, 1, 2] -> [100, 2]
-                top_pred_prob = top_pred_prob.squeeze(1)  # similarly for the probabilities
-
-            
-            return top_pred_gps, top_pred_prob
+        return top_pred_gps, top_pred_values
