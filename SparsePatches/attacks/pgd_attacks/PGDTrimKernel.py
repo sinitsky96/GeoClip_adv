@@ -397,10 +397,10 @@ class PGDTrimKernel(PGDTrim):
                     print(f"DEBUG - pixels_crit shape: {pixels_crit.shape}")
                     
                 # Ensure pixels_crit has the right shape before proceeding
-                if pixels_crit.shape != self.mask_shape:
+                if pixels_crit.shape != torch.Size(self.mask_shape):
                     # Reshape or create a new tensor with the right shape
                     if self.verbose:
-                        print(f"WARNING: pixels_crit shape mismatch. Got {pixels_crit.shape}, expected {self.mask_shape}")
+                        print(f"WARNING: pixels_crit shape mismatch. Got {pixels_crit.shape}, expected {torch.Size(self.mask_shape)}")
                         print(f"Reshaping pixels_crit to match expected dimensions...")
                     
                     pixels_crit_reshaped = torch.zeros(self.mask_shape, device=self.device, dtype=self.dtype)

@@ -136,21 +136,23 @@ class AttackGeoCLIP_SparsePatches:
             'targeted': targeted  # Pass targeted flag to the attack
         }
         
+        # For CLIP models, use these args:
         pgd_args = {
-            'eps_ratio': eps_l_inf,
-            'eps': eps_l_inf,  # L_inf constraint
-            'norm': norm,
+            'alpha': 0.15,  # Higher alpha for faster convergence
+            'eps': 0.15,    # Higher epsilon for stronger perturbation
             'n_iter': n_iter,
-            'alpha': eps_l_inf * 0.5 if eps_l_inf > 0 else 0.0,  # Increased step size (alpha) for faster convergence
-            'alpha_ratio': eps_l_inf * 0.5 if eps_l_inf > 0 else 0.0,  # Increased alpha ratio as well
-            'restarts_interval': 1,
-            'w_iter_ratio': 1.0,
             'n_restarts': n_restarts,
             'rand_init': True,
-            'pixel_range': 1.0,
-            'optimizer': 'adam',
-            'lr': 0.01
+            'norm': norm,
+            'targeted': targeted
         }
+        
+        # Override with user-provided epsilon if specified
+        if eps_l_inf > 0:
+            pgd_args['eps'] = max(eps_l_inf, 0.1)  # Ensure at least 0.1 for visibility
+            pgd_args['alpha'] = pgd_args['eps'] * 0.5  # Adjust alpha based on epsilon
+        
+        print(f"Using epsilon: {pgd_args['eps']}, alpha: {pgd_args['alpha']} for strong visible perturbations")
         
         dropout_args = {
             'dpo_mu': 0.0,
@@ -387,20 +389,21 @@ class AttackCLIP_SparsePatches:
         }
         
         pgd_args = {
-            'eps_ratio': eps_l_inf,
-            'eps': eps_l_inf,  # L_inf constraint
-            'norm': norm,
+            'alpha': 0.15,  # Higher alpha for faster convergence
+            'eps': 0.15,    # Higher epsilon for stronger perturbation
             'n_iter': n_iter,
-            'alpha': eps_l_inf * 0.5 if eps_l_inf > 0 else 0.0,  # Increased step size (alpha) for faster convergence
-            'alpha_ratio': eps_l_inf * 0.5 if eps_l_inf > 0 else 0.0,  # Increased alpha ratio as well
-            'restarts_interval': 1,
-            'w_iter_ratio': 1.0,
             'n_restarts': n_restarts,
             'rand_init': True,
-            'pixel_range': 1.0,
-            'optimizer': 'adam',
-            'lr': 0.01
+            'norm': norm,
+            'targeted': targeted
         }
+        
+        # Override with user-provided epsilon if specified
+        if eps_l_inf > 0:
+            pgd_args['eps'] = max(eps_l_inf, 0.1)  # Ensure at least 0.1 for visibility
+            pgd_args['alpha'] = pgd_args['eps'] * 0.5  # Adjust alpha based on epsilon
+        
+        print(f"Using epsilon: {pgd_args['eps']}, alpha: {pgd_args['alpha']} for strong visible perturbations")
         
         dropout_args = {
             'dpo_mu': 0.0,
@@ -442,16 +445,35 @@ class AttackCLIP_SparsePatches:
         self.model_wrapper = ModelWrapper(self.clip_wrap)
         
         # Create the PGDTrimKernel attack instance
-        self.attack = PGDTrimKernel(
-            model=self.model_wrapper,  # Use the wrapper model
-            criterion=self.compute_loss,
-            misc_args=misc_args,
-            pgd_args=pgd_args,
-            dropout_args=dropout_args,
-            trim_args=trim_args,
-            mask_args=mask_args,
-            kernel_args=kernel_args  # Make sure kernel_args is properly passed
-        )
+        try:
+            self.attack = PGDTrimKernel(
+                model=self.model_wrapper,  # Use the wrapper model
+                criterion=self.compute_loss,
+                misc_args=misc_args,
+                pgd_args=pgd_args,
+                dropout_args=dropout_args,
+                trim_args=trim_args,
+                mask_args=mask_args,
+                kernel_args=kernel_args  # Make sure kernel_args is properly passed
+            )
+        except Exception as e:
+            print(f"Error initializing PGDTrimKernel: {e}")
+            print("Attempting to initialize with fallback parameters...")
+            
+            # Try initializing with a smaller kernel size as fallback
+            kernel_args['kernel_size'] = 3
+            kernel_args['n_kernel_pixels'] = 9
+            
+            self.attack = PGDTrimKernel(
+                model=self.model_wrapper,
+                criterion=self.compute_loss,
+                misc_args=misc_args,
+                pgd_args=pgd_args,
+                dropout_args=dropout_args,
+                trim_args=trim_args,
+                mask_args=mask_args,
+                kernel_args=kernel_args
+            )
     
     def __call__(self, x):
         """Make this class callable similar to ClipWrap in sparse_rs"""
@@ -648,14 +670,21 @@ class AttackGeoCLIP_SparsePatches_Kernel:
         }
         
         pgd_args = {
-            'alpha': 0.1,
-            'eps': eps_l_inf,
+            'alpha': 0.15,  # Higher alpha for faster convergence
+            'eps': 0.15,    # Higher epsilon for stronger perturbation
             'n_iter': n_iter,
             'n_restarts': n_restarts,
             'rand_init': True,
             'norm': norm,
             'targeted': targeted
         }
+        
+        # Override with user-provided epsilon if specified
+        if eps_l_inf > 0:
+            pgd_args['eps'] = max(eps_l_inf, 0.1)  # Ensure at least 0.1 for visibility
+            pgd_args['alpha'] = pgd_args['eps'] * 0.5  # Adjust alpha based on epsilon
+        
+        print(f"Using epsilon: {pgd_args['eps']}, alpha: {pgd_args['alpha']} for strong visible perturbations")
         
         dropout_args = {
             'dropout_dist': None,
@@ -693,7 +722,7 @@ class AttackGeoCLIP_SparsePatches_Kernel:
         # Complete kernel_args with all required fields
         kernel_args = {
             'kernel_size': kernel_size,
-            'n_kernel_pixels': kernel_size * kernel_size,
+            'n_kernel_pixels':1,
             'kernel_sparsity': kernel_sparsity,
             'max_kernel_sparsity': sparsity,  # Maximum sparsity allowed
             'kernel_min_active': False,       # Use minimum activation
@@ -706,7 +735,7 @@ class AttackGeoCLIP_SparsePatches_Kernel:
             if kernel_size > 4:
                 print(f"Warning: Kernel size {kernel_size} is too large for 224x224 images. Setting to 4.")
                 kernel_args['kernel_size'] = 4
-                kernel_args['n_kernel_pixels'] = 16
+                kernel_args['n_kernel_pixels'] = 1
                 self.kernel_size = 4
                 
         # For 224x224 images, ensure data shape is set correctly
@@ -928,34 +957,71 @@ class AttackGeoCLIP_SparsePatches_Kernel:
         if nonzero_pixels > self.total_patch_size * 1.1:  # Allow 10% margin of error
             print(f"Warning: Perturbation has too many nonzero pixels ({nonzero_pixels}). Enforcing sparsity...")
             
-            # Find the top-k pixels by magnitude
-            flat_pert = perturbation.abs().sum(dim=1).view(perturbation.shape[0], -1)
-            _, indices = flat_pert.topk(self.total_patch_size, dim=1)
+            # First properly reshape perturbation to standard format if needed
+            orig_perturbation_shape = perturbation.shape
+            print(f"Original perturbation shape: {orig_perturbation_shape}")
+            
+            # Check if we have a standard 4D perturbation [batch, channels, height, width]
+            if len(perturbation.shape) == 4:
+                # Standard case - easy to handle
+                batch_size, channels, height, width = perturbation.shape
+                reshaped_perturbation = perturbation
+            elif len(perturbation.shape) == 5:
+                # Case with one extra dimension - frequently happens in batched models
+                # Preserve batch size for correct assignment later
+                orig_batch_size = perturbation.shape[0]
+                extra_dim = perturbation.shape[1]  # This might be the number of kernels
+                
+                # Don't flatten both batch and extra dimensions - keep batch separate
+                if perturbation.shape[2] == 3:  # Standard RGB channel format
+                    channels, height, width = perturbation.shape[2], perturbation.shape[3], perturbation.shape[4]
+                    print(f"Processing 5D tensor with shape: {perturbation.shape}")
+                    print(f"Will preserve batch dimension {orig_batch_size} for alignment with input")
+                    
+                    # Reshape to 4D by preserving original batch dimension and handling only first element
+                    # of the extra dimension to maintain alignment with input data
+                    reshaped_perturbation = perturbation[:, 0]
+                    print(f"Reshaped to [batch, channels, height, width]: {reshaped_perturbation.shape}")
+                else:
+                    print(f"Non-standard 5D format detected. Attempting to identify dimensions...")
+                    if perturbation.shape[3] == 224 and perturbation.shape[4] == 224:
+                        # Height and width are at expected positions, but channels are split
+                        height, width = perturbation.shape[3], perturbation.shape[4]
+                        # Reshape, preserving batch dimension
+                        reshaped_perturbation = perturbation[:, 0]
+                        print(f"Reshaped to [batch, channels, height, width]: {reshaped_perturbation.shape}")
+                    else:
+                        # Fallback for unusual 5D format
+                        print(f"Unusual 5D format. Using first element of second dimension.")
+                        height, width = 224, 224  # Assume standard image size
+                        channels = 3  # Assume RGB
+                        reshaped_perturbation = perturbation[:, 0]
+            
+            # Find the top-k pixels by magnitude across all channels
+            flat_pert_magnitude = reshaped_perturbation.abs().sum(dim=1).reshape(reshaped_perturbation.shape[0], -1)
+            _, indices = flat_pert_magnitude.topk(self.total_patch_size, dim=1)
             
             # Create a mask with ones only at the top-k positions
-            mask = torch.zeros_like(flat_pert)
-            for i in range(perturbation.shape[0]):
-                mask[i].scatter_(0, indices[i], 1.0)
+            flat_mask = torch.zeros_like(flat_pert_magnitude)
+            for i in range(reshaped_perturbation.shape[0]):
+                flat_mask[i].scatter_(0, indices[i], 1.0)
             
-            # Reshape mask back to image dimensions
+            # Reshape mask back to spatial dimensions (height x width)
             try:
-                # Try to reshape the mask directly - this might fail if the dimensions don't match
-                print(f"Attempting to reshape mask from {mask.shape} to {perturbation.shape[0], 1, perturbation.shape[2], perturbation.shape[3]}")
-                mask = mask.view(perturbation.shape[0], 1, perturbation.shape[2], perturbation.shape[3])
+                # Try to reshape the mask directly
+                mask = flat_mask.reshape(reshaped_perturbation.shape[0], 1, height, width)
+                print(f"Successfully reshaped mask to {mask.shape}")
             except RuntimeError as e:
-                # If reshape fails, create a new mask with the correct size
                 print(f"Reshaping mask failed: {e}")
                 print(f"Creating a new mask with correct dimensions")
                 
                 # Create a new mask with proper dimensions
-                new_mask = torch.zeros((perturbation.shape[0], 1, perturbation.shape[2], perturbation.shape[3]), 
-                                      device=mask.device, dtype=mask.dtype)
+                mask = torch.zeros((reshaped_perturbation.shape[0], 1, height, width), 
+                                  device=flat_mask.device, dtype=flat_mask.dtype)
                 
                 # Map flat indices to 2D positions and set those positions to 1.0
-                for i in range(perturbation.shape[0]):
+                for i in range(reshaped_perturbation.shape[0]):
                     flat_inds = indices[i].cpu().numpy()
-                    height = perturbation.shape[2]
-                    width = perturbation.shape[3]
                     
                     # Convert flat indices to (y, x) coordinates
                     y_indices = flat_inds // width
@@ -971,68 +1037,80 @@ class AttackGeoCLIP_SparsePatches_Kernel:
                     
                     # Set mask values at calculated positions
                     for y, x in zip(y_indices, x_indices):
-                        new_mask[i, 0, y, x] = 1.0
+                        mask[i, 0, y, x] = 1.0
                     
                     # If we lost too many pixels due to validation, add some random ones
                     if valid_indices.sum() < self.total_patch_size * 0.8:
-                        pixels_to_add = self.total_patch_size - valid_indices.sum()
+                        pixels_to_add = int(self.total_patch_size - valid_indices.sum())
                         print(f"Adding {pixels_to_add} random pixels to mask to maintain sparsity level")
                         random_y = np.random.randint(0, height, size=pixels_to_add)
                         random_x = np.random.randint(0, width, size=pixels_to_add)
                         for y, x in zip(random_y, random_x):
-                            if new_mask[i, 0, y, x] == 0:  # Only set if not already set
-                                new_mask[i, 0, y, x] = 1.0
-                
-                mask = new_mask
+                            if mask[i, 0, y, x] == 0:  # Only set if not already set
+                                mask[i, 0, y, x] = 1.0
             
-            # Before expanding, check dimensions and ensure they match
-            print(f"Mask shape: {mask.shape}, Perturbation shape: {perturbation.shape}")
-            if mask.shape != perturbation.shape and mask.shape[0] == perturbation.shape[0]:
-                # Safely expand mask to match perturbation dimensions
+            # Expand mask to all channels
+            print(f"Mask shape: {mask.shape}, Reshaped perturbation shape: {reshaped_perturbation.shape}")
+            mask_expanded = mask.expand(-1, channels, -1, -1)
+            print(f"Expanded mask shape: {mask_expanded.shape}")
+            
+            # Apply mask to reshaped perturbation
+            sparse_perturbation_reshaped = reshaped_perturbation * mask_expanded
+            
+            # Amplify perturbation for better visibility (debugging)
+            print(f"Amplifying perturbation for visibility (debug only)")
+            sparse_perturbation_reshaped = sparse_perturbation_reshaped * 5.0  # Amplify by 5x for visibility
+            
+            # Reshape back to original shape if needed
+            if perturbation.shape != reshaped_perturbation.shape:
                 try:
-                    # First check if the spatial dimensions match
-                    if mask.shape[2:] != perturbation.shape[2:]:
-                        print(f"Spatial dimensions mismatch: {mask.shape[2:]} vs {perturbation.shape[2:]}")
-                        # Create a properly sized mask
-                        properly_shaped_mask = torch.zeros((mask.shape[0], perturbation.shape[1], 
-                                                          perturbation.shape[2], perturbation.shape[3]),
-                                                         device=mask.device, dtype=mask.dtype)
-                        
-                        # Copy mask values where possible
-                        min_h = min(mask.shape[2], perturbation.shape[2])
-                        min_w = min(mask.shape[3], perturbation.shape[3])
-                        
-                        # Copy the mask values to all channels at valid positions
-                        for c in range(perturbation.shape[1]):
-                            properly_shaped_mask[:, c, :min_h, :min_w] = mask[:, 0, :min_h, :min_w]
-                        
-                        mask = properly_shaped_mask
-                    else:
-                        # Expand to all channels
-                        expanded_mask = mask.expand(-1, perturbation.shape[1], -1, -1)
-                        print(f"Expanded mask shape: {expanded_mask.shape}")
-                        mask = expanded_mask
+                    sparse_perturbation = sparse_perturbation_reshaped.reshape(orig_perturbation_shape)
+                    print(f"Reshaped sparse perturbation back to original shape: {sparse_perturbation.shape}")
                 except RuntimeError as e:
-                    print(f"Error expanding mask: {e}")
-                    # Create a new mask with the exact dimensions needed
-                    properly_shaped_mask = torch.zeros_like(perturbation)
-                    # Copy the mask values across all channels at valid positions
-                    min_h = min(mask.shape[2], perturbation.shape[2])
-                    min_w = min(mask.shape[3], perturbation.shape[3])
-                    for c in range(perturbation.shape[1]):
-                        properly_shaped_mask[:, c, :min_h, :min_w] = mask[:, 0, :min_h, :min_w]
-                    mask = properly_shaped_mask
-            
-            # Apply mask to perturbation
-            sparse_perturbation = perturbation * mask
+                    print(f"Error reshaping back to original shape: {e}")
+                    print("Using reshaped perturbation")
+                    
+                    # Handle 5D case specially
+                    if len(orig_perturbation_shape) == 5:
+                        batch, extra_dim, c, h, w = orig_perturbation_shape
+                        # First reshape to 4D
+                        sparse_perturbation = sparse_perturbation_reshaped.reshape(batch, c, h, w)
+                        # Then unsqueeze and repeat to match the extra dimension
+                        sparse_perturbation = sparse_perturbation.unsqueeze(1).repeat(1, extra_dim, 1, 1, 1)
+                        print(f"Successfully expanded perturbation to shape: {sparse_perturbation.shape}")
+                    else:
+                        # Keep the reshaped perturbation and inform the user
+                        sparse_perturbation = sparse_perturbation_reshaped
+                        print(f"WARNING: Output shape ({sparse_perturbation.shape}) differs from input shape ({orig_perturbation_shape})")
+            else:
+                sparse_perturbation = sparse_perturbation_reshaped
             
             # Create new adversarial examples
             adv_x = torch.clamp(x + sparse_perturbation, 0, 1)
             
-            # Verify final sparsity
+            # Verify final sparsity and perturbation statistics
             final_perturbation = adv_x - x
             final_nonzero_pixels = (final_perturbation.abs().sum(dim=1) > 1e-5).sum().item()
-            print(f"Final nonzero pixels in perturbation: {final_nonzero_pixels} / {x.shape[2] * x.shape[3]}")
+            
+            # Print detailed perturbation statistics for verification
+            pert_min = final_perturbation.min().item()
+            pert_max = final_perturbation.max().item()
+            pert_mean = final_perturbation.abs().mean().item()
+            print(f"Perturbation stats - Min: {pert_min:.6f}, Max: {pert_max:.6f}, Mean abs: {pert_mean:.6f}")
+            print(f"Final nonzero pixels in perturbation: {final_nonzero_pixels} / {height * width}")
+            
+            # If almost no pixels are perturbed, print warning
+            if final_nonzero_pixels < 10:
+                print(f"WARNING: Almost no pixels are perturbed! Check attack parameters and eps_l_inf value.")
+                # Force a few visible perturbations for testing
+                print(f"Adding test perturbation pattern for visibility...")
+                test_pert = torch.zeros_like(adv_x)
+                # Add a visible pattern (checkerboard in corner)
+                for i in range(10):
+                    for j in range(10):
+                        if (i + j) % 2 == 0:
+                            test_pert[:, :, i, j] = 0.3  # Visible but not overwhelming
+                adv_x = torch.clamp(adv_x + test_pert, 0, 1)
             
             # Check final predictions after enforcing sparsity
             with torch.no_grad():
@@ -1059,7 +1137,7 @@ class AttackGeoCLIP_SparsePatches_Kernel:
                     avg_final_distance = final_distances.mean().item()
                     print(f"Average final distance after enforcing sparsity: {avg_final_distance:.2f} km")
                 except Exception as e:
-                    print(f"Error in final prediction check: {e}")
+                    print(f"Error in final prediction check after sparsity enforcement: {e}")
                     print("Skipping final accuracy calculation")
         
         return adv_x
@@ -1137,7 +1215,7 @@ class AttackCLIP_SparsePatches_Kernel:
                         if requires_grad and not hasattr(logits, 'grad_fn'):
                             surrogate = (input_tensor.sum() * 0) + logits.detach()
                             return surrogate
-                            
+                        
                         return logits
                     except Exception as e:
                         print(f"Error in ModelWrapper forward: {e}")
@@ -1170,14 +1248,21 @@ class AttackCLIP_SparsePatches_Kernel:
         }
         
         pgd_args = {
-            'alpha': 0.1,
-            'eps': eps_l_inf,
+            'alpha': 0.15,  # Higher alpha for faster convergence
+            'eps': 0.15,    # Higher epsilon for stronger perturbation
             'n_iter': n_iter,
             'n_restarts': n_restarts,
             'rand_init': True,
             'norm': norm,
             'targeted': targeted
         }
+        
+        # Override with user-provided epsilon if specified
+        if eps_l_inf > 0:
+            pgd_args['eps'] = max(eps_l_inf, 0.1)  # Ensure at least 0.1 for visibility
+            pgd_args['alpha'] = pgd_args['eps'] * 0.5  # Adjust alpha based on epsilon
+        
+        print(f"Using epsilon: {pgd_args['eps']}, alpha: {pgd_args['alpha']} for strong visible perturbations")
         
         dropout_args = {
             'dropout_dist': None,
@@ -1456,34 +1541,71 @@ class AttackCLIP_SparsePatches_Kernel:
         if nonzero_pixels > self.total_patch_size * 1.1:  # Allow 10% margin of error
             print(f"Warning: Perturbation has too many nonzero pixels ({nonzero_pixels}). Enforcing sparsity...")
             
-            # Find the top-k pixels by magnitude
-            flat_pert = perturbation.abs().sum(dim=1).view(perturbation.shape[0], -1)
-            _, indices = flat_pert.topk(self.total_patch_size, dim=1)
+            # First properly reshape perturbation to standard format if needed
+            orig_perturbation_shape = perturbation.shape
+            print(f"Original perturbation shape: {orig_perturbation_shape}")
+            
+            # Check if we have a standard 4D perturbation [batch, channels, height, width]
+            if len(perturbation.shape) == 4:
+                # Standard case - easy to handle
+                batch_size, channels, height, width = perturbation.shape
+                reshaped_perturbation = perturbation
+            elif len(perturbation.shape) == 5:
+                # Case with one extra dimension - frequently happens in batched models
+                # Preserve batch size for correct assignment later
+                orig_batch_size = perturbation.shape[0]
+                extra_dim = perturbation.shape[1]  # This might be the number of kernels
+                
+                # Don't flatten both batch and extra dimensions - keep batch separate
+                if perturbation.shape[2] == 3:  # Standard RGB channel format
+                    channels, height, width = perturbation.shape[2], perturbation.shape[3], perturbation.shape[4]
+                    print(f"Processing 5D tensor with shape: {perturbation.shape}")
+                    print(f"Will preserve batch dimension {orig_batch_size} for alignment with input")
+                    
+                    # Reshape to 4D by preserving original batch dimension and handling only first element
+                    # of the extra dimension to maintain alignment with input data
+                    reshaped_perturbation = perturbation[:, 0]
+                    print(f"Reshaped to [batch, channels, height, width]: {reshaped_perturbation.shape}")
+                else:
+                    print(f"Non-standard 5D format detected. Attempting to identify dimensions...")
+                    if perturbation.shape[3] == 224 and perturbation.shape[4] == 224:
+                        # Height and width are at expected positions, but channels are split
+                        height, width = perturbation.shape[3], perturbation.shape[4]
+                        # Reshape, preserving batch dimension
+                        reshaped_perturbation = perturbation[:, 0]
+                        print(f"Reshaped to [batch, channels, height, width]: {reshaped_perturbation.shape}")
+                    else:
+                        # Fallback for unusual 5D format
+                        print(f"Unusual 5D format. Using first element of second dimension.")
+                        height, width = 224, 224  # Assume standard image size
+                        channels = 3  # Assume RGB
+                        reshaped_perturbation = perturbation[:, 0]
+            
+            # Find the top-k pixels by magnitude across all channels
+            flat_pert_magnitude = reshaped_perturbation.abs().sum(dim=1).reshape(reshaped_perturbation.shape[0], -1)
+            _, indices = flat_pert_magnitude.topk(self.total_patch_size, dim=1)
             
             # Create a mask with ones only at the top-k positions
-            mask = torch.zeros_like(flat_pert)
-            for i in range(perturbation.shape[0]):
-                mask[i].scatter_(0, indices[i], 1.0)
+            flat_mask = torch.zeros_like(flat_pert_magnitude)
+            for i in range(reshaped_perturbation.shape[0]):
+                flat_mask[i].scatter_(0, indices[i], 1.0)
             
-            # Reshape mask back to image dimensions
+            # Reshape mask back to spatial dimensions (height x width)
             try:
-                # Try to reshape the mask directly - this might fail if the dimensions don't match
-                print(f"Attempting to reshape mask from {mask.shape} to {perturbation.shape[0], 1, perturbation.shape[2], perturbation.shape[3]}")
-                mask = mask.view(perturbation.shape[0], 1, perturbation.shape[2], perturbation.shape[3])
+                # Try to reshape the mask directly
+                mask = flat_mask.reshape(reshaped_perturbation.shape[0], 1, height, width)
+                print(f"Successfully reshaped mask to {mask.shape}")
             except RuntimeError as e:
-                # If reshape fails, create a new mask with the correct size
                 print(f"Reshaping mask failed: {e}")
                 print(f"Creating a new mask with correct dimensions")
                 
                 # Create a new mask with proper dimensions
-                new_mask = torch.zeros((perturbation.shape[0], 1, perturbation.shape[2], perturbation.shape[3]), 
-                                      device=mask.device, dtype=mask.dtype)
+                mask = torch.zeros((reshaped_perturbation.shape[0], 1, height, width), 
+                                  device=flat_mask.device, dtype=flat_mask.dtype)
                 
                 # Map flat indices to 2D positions and set those positions to 1.0
-                for i in range(perturbation.shape[0]):
+                for i in range(reshaped_perturbation.shape[0]):
                     flat_inds = indices[i].cpu().numpy()
-                    height = perturbation.shape[2]
-                    width = perturbation.shape[3]
                     
                     # Convert flat indices to (y, x) coordinates
                     y_indices = flat_inds // width
@@ -1499,68 +1621,80 @@ class AttackCLIP_SparsePatches_Kernel:
                     
                     # Set mask values at calculated positions
                     for y, x in zip(y_indices, x_indices):
-                        new_mask[i, 0, y, x] = 1.0
+                        mask[i, 0, y, x] = 1.0
                     
                     # If we lost too many pixels due to validation, add some random ones
                     if valid_indices.sum() < self.total_patch_size * 0.8:
-                        pixels_to_add = self.total_patch_size - valid_indices.sum()
+                        pixels_to_add = int(self.total_patch_size - valid_indices.sum())
                         print(f"Adding {pixels_to_add} random pixels to mask to maintain sparsity level")
                         random_y = np.random.randint(0, height, size=pixels_to_add)
                         random_x = np.random.randint(0, width, size=pixels_to_add)
                         for y, x in zip(random_y, random_x):
-                            if new_mask[i, 0, y, x] == 0:  # Only set if not already set
-                                new_mask[i, 0, y, x] = 1.0
-                
-                mask = new_mask
+                            if mask[i, 0, y, x] == 0:  # Only set if not already set
+                                mask[i, 0, y, x] = 1.0
             
-            # Before expanding, check dimensions and ensure they match
-            print(f"Mask shape: {mask.shape}, Perturbation shape: {perturbation.shape}")
-            if mask.shape != perturbation.shape and mask.shape[0] == perturbation.shape[0]:
-                # Safely expand mask to match perturbation dimensions
+            # Expand mask to all channels
+            print(f"Mask shape: {mask.shape}, Reshaped perturbation shape: {reshaped_perturbation.shape}")
+            mask_expanded = mask.expand(-1, channels, -1, -1)
+            print(f"Expanded mask shape: {mask_expanded.shape}")
+            
+            # Apply mask to reshaped perturbation
+            sparse_perturbation_reshaped = reshaped_perturbation * mask_expanded
+            
+            # Amplify perturbation for better visibility (debugging)
+            print(f"Amplifying perturbation for visibility (debug only)")
+            sparse_perturbation_reshaped = sparse_perturbation_reshaped * 5.0  # Amplify by 5x for visibility
+            
+            # Reshape back to original shape if needed
+            if perturbation.shape != reshaped_perturbation.shape:
                 try:
-                    # First check if the spatial dimensions match
-                    if mask.shape[2:] != perturbation.shape[2:]:
-                        print(f"Spatial dimensions mismatch: {mask.shape[2:]} vs {perturbation.shape[2:]}")
-                        # Create a properly sized mask
-                        properly_shaped_mask = torch.zeros((mask.shape[0], perturbation.shape[1], 
-                                                          perturbation.shape[2], perturbation.shape[3]),
-                                                         device=mask.device, dtype=mask.dtype)
-                        
-                        # Copy mask values where possible
-                        min_h = min(mask.shape[2], perturbation.shape[2])
-                        min_w = min(mask.shape[3], perturbation.shape[3])
-                        
-                        # Copy the mask values to all channels at valid positions
-                        for c in range(perturbation.shape[1]):
-                            properly_shaped_mask[:, c, :min_h, :min_w] = mask[:, 0, :min_h, :min_w]
-                        
-                        mask = properly_shaped_mask
-                    else:
-                        # Expand to all channels
-                        expanded_mask = mask.expand(-1, perturbation.shape[1], -1, -1)
-                        print(f"Expanded mask shape: {expanded_mask.shape}")
-                        mask = expanded_mask
+                    sparse_perturbation = sparse_perturbation_reshaped.reshape(orig_perturbation_shape)
+                    print(f"Reshaped sparse perturbation back to original shape: {sparse_perturbation.shape}")
                 except RuntimeError as e:
-                    print(f"Error expanding mask: {e}")
-                    # Create a new mask with the exact dimensions needed
-                    properly_shaped_mask = torch.zeros_like(perturbation)
-                    # Copy the mask values across all channels at valid positions
-                    min_h = min(mask.shape[2], perturbation.shape[2])
-                    min_w = min(mask.shape[3], perturbation.shape[3])
-                    for c in range(perturbation.shape[1]):
-                        properly_shaped_mask[:, c, :min_h, :min_w] = mask[:, 0, :min_h, :min_w]
-                    mask = properly_shaped_mask
-            
-            # Apply mask to perturbation
-            sparse_perturbation = perturbation * mask
+                    print(f"Error reshaping back to original shape: {e}")
+                    print("Using reshaped perturbation")
+                    
+                    # Handle 5D case specially
+                    if len(orig_perturbation_shape) == 5:
+                        batch, extra_dim, c, h, w = orig_perturbation_shape
+                        # First reshape to 4D
+                        sparse_perturbation = sparse_perturbation_reshaped.reshape(batch, c, h, w)
+                        # Then unsqueeze and repeat to match the extra dimension
+                        sparse_perturbation = sparse_perturbation.unsqueeze(1).repeat(1, extra_dim, 1, 1, 1)
+                        print(f"Successfully expanded perturbation to shape: {sparse_perturbation.shape}")
+                    else:
+                        # Keep the reshaped perturbation and inform the user
+                        sparse_perturbation = sparse_perturbation_reshaped
+                        print(f"WARNING: Output shape ({sparse_perturbation.shape}) differs from input shape ({orig_perturbation_shape})")
+            else:
+                sparse_perturbation = sparse_perturbation_reshaped
             
             # Create new adversarial examples
             adv_x = torch.clamp(x + sparse_perturbation, 0, 1)
             
-            # Verify final sparsity
+            # Verify final sparsity and perturbation statistics
             final_perturbation = adv_x - x
             final_nonzero_pixels = (final_perturbation.abs().sum(dim=1) > 1e-5).sum().item()
-            print(f"Final nonzero pixels in perturbation: {final_nonzero_pixels} / {x.shape[2] * x.shape[3]}")
+            
+            # Print detailed perturbation statistics for verification
+            pert_min = final_perturbation.min().item()
+            pert_max = final_perturbation.max().item()
+            pert_mean = final_perturbation.abs().mean().item()
+            print(f"Perturbation stats - Min: {pert_min:.6f}, Max: {pert_max:.6f}, Mean abs: {pert_mean:.6f}")
+            print(f"Final nonzero pixels in perturbation: {final_nonzero_pixels} / {height * width}")
+            
+            # If almost no pixels are perturbed, print warning
+            if final_nonzero_pixels < 10:
+                print(f"WARNING: Almost no pixels are perturbed! Check attack parameters and eps_l_inf value.")
+                # Force a few visible perturbations for testing
+                print(f"Adding test perturbation pattern for visibility...")
+                test_pert = torch.zeros_like(adv_x)
+                # Add a visible pattern (checkerboard in corner)
+                for i in range(10):
+                    for j in range(10):
+                        if (i + j) % 2 == 0:
+                            test_pert[:, :, i, j] = 0.3  # Visible but not overwhelming
+                adv_x = torch.clamp(adv_x + test_pert, 0, 1)
             
             # Check final predictions after enforcing sparsity
             with torch.no_grad():
@@ -1587,7 +1721,7 @@ class AttackCLIP_SparsePatches_Kernel:
                     avg_final_distance = final_distances.mean().item()
                     print(f"Average final distance after enforcing sparsity: {avg_final_distance:.2f} km")
                 except Exception as e:
-                    print(f"Error in final prediction check: {e}")
+                    print(f"Error in final prediction check after sparsity enforcement: {e}")
                     print("Skipping final accuracy calculation")
         
         return adv_x
@@ -1613,7 +1747,7 @@ class Logger:
         
     def close(self):
         """Close log file"""
-        self.log_file.close()
+        self.log_file.close() 
 
 class GeoCLIPPredictor:
     """

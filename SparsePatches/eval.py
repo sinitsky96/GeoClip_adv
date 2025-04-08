@@ -53,11 +53,11 @@ if __name__ == '__main__':
     
     # Kernel parameters (used only with kernel attack)  
     parser.add_argument('--kernel_size', default=4, type=int, help='Size of kernel for kernel attack (used only with --attack_type kernel)')
-    parser.add_argument('--kernel_sparsity', default=8, type=int, help='Sparsity within each kernel (used only with --attack_type kernel)')
+    parser.add_argument('--kernel_sparsity', default=1, type=int, help='Sparsity within each kernel (used only with --attack_type kernel)')
 
     parser.add_argument('--n_restarts', type=int, default=10)  # Number of random restarts
     parser.add_argument('--loss', type=str, default='margin', choices=['margin', 'ce'])  # loss function for the attack, options: 'margin', 'ce'
-    parser.add_argument('--n_ex', type=int, default=20)  # dataset size
+    parser.add_argument('--n_ex', type=int, default=114)  # dataset size
     parser.add_argument('--bs', type=int, default=32)  # batch size
     parser.add_argument('--n_iter', type=int, default=20)  # number of iterations
     parser.add_argument('--seed', type=int, default=42)
@@ -281,7 +281,7 @@ if __name__ == '__main__':
                 norm=args.norm,
                 sparsity=args.sparsity,
                 kernel_size=args.kernel_size,
-                kernel_sparsity=args.kernel_size*args.kernel_size,
+                kernel_sparsity=1,
                 eps_l_inf=args.eps_l_inf,
                 n_iter=args.n_iter,
                 n_restarts=args.n_restarts,
@@ -299,7 +299,7 @@ if __name__ == '__main__':
                 norm=args.norm,
                 sparsity=args.sparsity,
                 kernel_size=args.kernel_size,
-                kernel_sparsity=args.kernel_size*args.kernel_size,
+                kernel_sparsity=1,
                 eps_l_inf=args.eps_l_inf,
                 n_iter=args.n_iter,
                 n_restarts=args.n_restarts,
@@ -434,7 +434,33 @@ if __name__ == '__main__':
 
                 # Run the attack to get adversarial examples
                 adv = adversary.perturb(x_curr, y_curr)
-                adv_complete[ind_to_fool[start_idx:end_idx]] = adv.detach().to(cpu_device)
+                
+                # Handle case where adv has extra dimensions (e.g., [batch, extra_dim, 3, 224, 224])
+                if len(adv.shape) > 4:
+                    print(f"Reshaping output from {adv.shape} to match input shape {x_curr.shape}")
+                    # If adv is 5D [batch, extra_dim, 3, 224, 224] but we need 4D [batch, 3, 224, 224]
+                    # Take only the first element from the second dimension
+                    adv = adv[:, 0]
+                    print(f"New shape: {adv.shape}")
+                
+                # Fix batch size mismatch before assignment
+                target_indices = ind_to_fool[start_idx:end_idx]
+                if adv.shape[0] != len(target_indices):
+                    print(f"WARNING: Batch size mismatch. Got {adv.shape[0]}, expected {len(target_indices)}")
+                    
+                    # Create a copy of the original images as base
+                    fixed_adv = x_test[target_indices].clone().to(adv.device)
+                    
+                    # Copy as many adversarial examples as we have
+                    min_batch = min(adv.shape[0], len(target_indices))
+                    fixed_adv[:min_batch] = adv[:min_batch]
+                    
+                    # Use the fixed tensor with correct batch size
+                    adv = fixed_adv
+                    print(f"Adjusted adv shape to {adv.shape}")
+                
+                # Now store the adversarial examples
+                adv_complete[target_indices] = adv.detach().to(cpu_device)
                 
                 if args.model.lower() == "geoclip":
                     output, _ = model.predict_from_tensor(adv)
