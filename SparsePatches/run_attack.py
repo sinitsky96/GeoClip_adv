@@ -10,6 +10,7 @@ import gc
 from parser import get_args, save_img_tensors
 from AdvRunner import AdvRunner
 from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R, CITY_R, REGION_R, COUNTRY_R
+from geoclip.model.GeoCLIP import GeoCLIP
 import json
 from datetime import datetime
 from torchvision.utils import save_image
@@ -101,11 +102,23 @@ def run_adv_attacks(args):
     att_l0_norms = args.attack_obj.output_l0_norms
     att_report_info = args.attack_obj.report_info
 
-    init_accuracy, x_adv, y_adv, l0_norms_adv_x, l0_norms_adv_y, \
-        l0_norms_robust_accuracy, l0_norms_acc_steps, l0_norms_avg_loss_steps, l0_norms_perts_info, \
-        adv_batch_compute_time_mean, adv_batch_compute_time_std, tot_adv_compute_time, tot_adv_compute_time_std = \
-        adv_runner.run_standard_evaluation(args.x_test, args.y_test, args.n_examples, bs=args.batch_size)
-    l0_norms_perts_max_l0, l0_norms_perts_min_l0, l0_norms_perts_mean_l0, l0_norms_perts_median_l0, l0_norms_perts_max_l_inf = l0_norms_perts_info
+    # Initialize lists to store distances
+    all_distances_clean = []
+    all_distances_adv = []
+
+    # Get results from standard evaluation
+    (init_accuracy, x_adv, y_adv, l0_norms_adv_x, l0_norms_adv_y,
+     l0_norms_robust_accuracy, l0_norms_acc_steps, l0_norms_loss_steps, l0_norms_perts_info,
+     adv_batch_compute_time_mean, adv_batch_compute_time_std,
+     tot_adv_compute_time, tot_adv_compute_time_std, all_distances_clean) = adv_runner.run_standard_evaluation(
+        args.x_test, args.y_test, args.n_examples, bs=args.batch_size)
+
+    # No need to concatenate all_distances_clean since it's already a tensor
+    distances_clean = all_distances_clean  # Already in correct shape [n_examples]
+
+    # Unpack perturbation info
+    (l0_norms_perts_max_l0, l0_norms_perts_min_l0, l0_norms_perts_mean_l0,
+     l0_norms_perts_median_l0, l0_norms_perts_max_l_inf) = l0_norms_perts_info
 
     # Create results dictionary
     results = {
@@ -116,11 +129,13 @@ def run_adv_attacks(args):
             'eps_l_inf': args.eps_l_inf,
             'n_iter': args.n_iter,
             'n_restarts': args.n_restarts,
-            'n_examples': args.n_examples
+            'n_examples': args.n_examples,
+            'kernel_size': args.attack_obj.kernel_size if hasattr(args.attack_obj, 'kernel_size') else None
         },
         'metrics': {}
     }
 
+    # Now process adversarial results for each L0 norm
     l0_norms_adv_loss = []
     for l0_norm_idx, l0_norm in enumerate(att_l0_norms):
         norm_results = {}
@@ -132,6 +147,7 @@ def run_adv_attacks(args):
         
         # Calculate distance-based metrics for GeoClip
         distances = haversine_distance(l0_norms_adv_y[l0_norm_idx], args.y_test)
+        all_distances_adv.append(distances)
         percent_continent = (distances <= CONTINENT_R).float().mean().item() * 100
         percent_country = (distances <= COUNTRY_R).float().mean().item() * 100
         percent_region = (distances <= REGION_R).float().mean().item() * 100
@@ -178,27 +194,129 @@ def run_adv_attacks(args):
         if att_report_info:
             norm_results.update({
                 'accuracy_steps': l0_norms_acc_steps[l0_norm_idx].tolist(),
-                'loss_steps': l0_norms_avg_loss_steps[l0_norm_idx].tolist()
+                'loss_steps': l0_norms_loss_steps[l0_norm_idx].tolist()
             })
-            l0_norms_adv_loss.append(l0_norms_avg_loss_steps[l0_norm_idx, -1, -1].item())
+            l0_norms_adv_loss.append(l0_norms_loss_steps[l0_norm_idx, -1, -1].item())
         
         results['metrics'][f'l0_norm_{l0_norm}'] = norm_results
         
         # Save images for this L0 norm
         if args.save_results:
             attack_type = "targeted" if args.targeted else "untargeted"
-            kernel_info = f"kernel_{args.kernel_size}" if hasattr(args, 'kernel_size') else "no_kernel"
+            # Get kernel info from the attack object if it's a kernel-based attack
+            if hasattr(args.attack_obj, 'kernel_size'):
+                kernel_info = f"kernel_{args.attack_obj.kernel_size}x{args.attack_obj.kernel_size}"
+            else:
+                kernel_info = "no_kernel"
             
-            # Only save images for the final sparsity level (256 pixels)
-            if l0_norm == args.sparsity:  # Only save for final trim step
+            # Only save images for the final sparsity level
+            if l0_norm == args.sparsity:
                 save_dir = os.path.join(args.results_dir, 
                                       f"{args.dataset}_{attack_type}_{kernel_info}_sparsity_{args.sparsity}")
                 save_images_and_perturbations(
                     save_dir,
-                    args.x_test.to(x_adv.device),  # ensure original images are on same device
-                    x_adv - args.x_test.to(x_adv.device),  # ensure both tensors are on same device for subtraction
-                    x_adv  # perturbed images
+                    args.x_test.to(x_adv.device),
+                    x_adv - args.x_test.to(x_adv.device),
+                    x_adv
                 )
+
+    # After calculating distances_clean and distances_adv, add detailed statistics
+    if isinstance(args.model, GeoCLIP):
+        # Reshape adversarial distances to match clean distances
+        # We need to select the distances for the final sparsity level only
+        final_distances_adv = all_distances_adv[-1]  # Take the last one (corresponding to final sparsity)
+        
+        # Verify shapes match
+        if distances_clean.shape != final_distances_adv.shape:
+            print(f"Warning: Clean distances shape {distances_clean.shape} doesn't match adversarial distances shape {final_distances_adv.shape}")
+            # Ensure we're using the same number of examples for both
+            min_size = min(distances_clean.size(0), final_distances_adv.size(0))
+            distances_clean = distances_clean[:min_size]
+            final_distances_adv = final_distances_adv[:min_size]
+        
+        # Ensure both tensors are on the same device (GPU)
+        distances_clean = distances_clean.to(args.device)
+        final_distances_adv = final_distances_adv.to(args.device)
+        
+        # Calculate accuracy metrics
+        if args.targeted:
+            acc = (final_distances_adv > STREET_R).float().sum().item()
+        else:
+            acc = (final_distances_adv <= CONTINENT_R).float().sum().item()
+        
+        print("\nGeoCLIP Attack Statistics")
+        print("------------------------")
+        print(f'Robust accuracy: {acc / args.n_examples:.2%}')
+        
+        # Print statistics relative to target or true location
+        target_str = f"targeted location: {args.target_class}" if args.targeted else "true location of the examples"
+        print(f"\nThe following statistics are relative to the {target_str}:")
+        
+        # Calculate improvements
+        if args.targeted:
+            improvement = distances_clean - final_distances_adv
+        else:
+            improvement = final_distances_adv - distances_clean
+            
+        neg_mask = improvement <= 0
+        pos_mask = improvement > 0
+        final_distances_adv[neg_mask] = distances_clean[neg_mask]  # filter bad adversarial attacks
+        
+        # Define thresholds and labels
+        thresholds = [STREET_R, CITY_R, REGION_R, COUNTRY_R, CONTINENT_R]
+        labels = {
+            STREET_R: "STREET_R (1 km)",
+            CITY_R: "CITY_R (25 km)",
+            REGION_R: "REGION_R (200 km)",
+            COUNTRY_R: "COUNTRY_R (750 km)",
+            CONTINENT_R: "CONTINENT_R (2500 km)"
+        }
+        
+        # Print clean vs adversarial predictions within each threshold
+        print("\nPrediction Distance Thresholds:")
+        for T in thresholds:
+            percent_T_clean = (distances_clean <= T).float().mean().item() * 100.0
+            percent_T_adv = (final_distances_adv <= T).float().mean().item() * 100.0
+            print(f"- {labels[T]}:")
+            print(f"  Clean predictions within threshold: {percent_T_clean:.2f}%")
+            print(f"  Adversarial predictions within threshold: {percent_T_adv:.2f}%")
+            print(f"  Change: {percent_T_adv - percent_T_clean:.2f}%")
+        
+        # Print improvement statistics
+        print("\nDistance Change Statistics:")
+        percent_improved = pos_mask.float().mean().item() * 100.0
+        print(f"Percentage of examples with positively changed distance: {percent_improved:.2f}%")
+        
+        if pos_mask.sum() > 0:
+            avg_improvement = improvement[pos_mask].mean().item()
+            median_improvement = improvement[pos_mask].median().item()
+            print(f"For successfully perturbed examples:")
+            print(f"- Average distance change: {avg_improvement:.2f} km")
+            print(f"- Median distance change: {median_improvement:.2f} km")
+        
+        # Overall statistics
+        print("\nOverall Statistics:")
+        print(f"Average distance change across all examples: {improvement.mean().item():.2f} km")
+        print(f"Median distance change across all examples: {improvement.median().item():.2f} km")
+        
+        # Add these statistics to the results dictionary
+        results['attack_statistics'] = {
+            'robust_accuracy': float(acc / args.n_examples),
+            'thresholds': {
+                labels[T]: {
+                    'clean_percent': float((distances_clean <= T).float().mean().item() * 100.0),
+                    'adv_percent': float((final_distances_adv <= T).float().mean().item() * 100.0),
+                    'change': float(((final_distances_adv <= T).float().mean().item() - (distances_clean <= T).float().mean().item()) * 100.0)
+                } for T in thresholds
+            },
+            'improvement_stats': {
+                'percent_improved': float(percent_improved),
+                'avg_improvement_successful': float(avg_improvement) if pos_mask.sum() > 0 else 0.0,
+                'median_improvement_successful': float(median_improvement) if pos_mask.sum() > 0 else 0.0,
+                'avg_improvement_overall': float(improvement.mean().item()),
+                'median_improvement_overall': float(improvement.median().item())
+            }
+        }
 
     # Add runtime metrics
     results['runtime'] = {
@@ -216,7 +334,7 @@ def run_adv_attacks(args):
     del init_accuracy, adv_runner, x_adv, l0_norms_adv_x
     del l0_norms_perts_max_l0, l0_norms_perts_min_l0, l0_norms_perts_mean_l0
     del l0_norms_perts_median_l0, l0_norms_perts_max_l_inf, l0_norms_robust_accuracy
-    del l0_norms_acc_steps, l0_norms_avg_loss_steps, adv_batch_compute_time_mean
+    del l0_norms_acc_steps, l0_norms_loss_steps, adv_batch_compute_time_mean
     del adv_batch_compute_time_std, tot_adv_compute_time, tot_adv_compute_time_std
     gc.collect()
     torch.cuda.empty_cache()

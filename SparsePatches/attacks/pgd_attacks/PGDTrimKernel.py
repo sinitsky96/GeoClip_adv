@@ -41,16 +41,16 @@ class PGDTrimKernel(PGDTrim):
     def report_schematics(self):
         
         print("Running novel PGDTrimKernel attack")
-        print("The attack will gradually trim a dense perturbation to the specified sparsity: " + str(self.sparsity))
-        print("The trimmed perturbation will be according to the kernel's structure: " + str(self.kernel_size))
-        print("The perturbation will be trimmed to " + str(self.kernel_sparsity) + " kernel patches of size: " + str(self.kernel_size) + "X" + str(self.kernel_size))
+        print(f"The attack will gradually trim a dense perturbation to the specified sparsity: {self.sparsity}")
+        print(f"The trimmed perturbation will be according to the kernel's structure: {self.kernel_size}")
+        print(f"The perturbation will be trimmed to {self.kernel_sparsity} kernel patches of size: {self.kernel_size}X{self.kernel_size}")
 
         print("Perturbations will be computed for:")
-        print("L0 norms:" + str(self.l0_norms))
-        print("L0 norms kernel number" + str(self.l0_norms_kernels))
+        print(f"L0 norms: {self.l0_norms}")
+        print(f"L0 norms kernel number: {self.l0_norms_kernels}")
         print("The best performing perturbations will be reported for:")
-        print("L0 norms:" + str(self.output_l0_norms))
-        print("L0 norms kernel number" + str(self.output_l0_norms_kernels))
+        print(f"L0 norms: {self.output_l0_norms}")
+        print(f"L0 norms kernel number: {self.output_l0_norms_kernels}")
         print("perturbations L_inf norm limitation:")
         print(self.eps_ratio)
         print("Number of iterations for optimizing perturbations in each trim step:")
@@ -131,15 +131,29 @@ class PGDTrimKernel(PGDTrim):
         return full_mask * pert
 
     def expand_kernel_mask(self, mask):
-        """Expand a kernel-level mask to full image resolution"""
+        """Expand a kernel-level mask to full image resolution with proper boundary handling"""
         batch_size, channels, h, w = mask.shape
         k = self.kernel_size
         
         # Create full resolution mask
         full_mask = torch.zeros((batch_size, channels, self.orig_h, self.orig_w), device=mask.device)
         
+        # Calculate padding to ensure dimensions are multiples of kernel size
+        pad_h = (k - (self.orig_h % k)) % k
+        pad_w = (k - (self.orig_w % k)) % k
+        
+        # Adjust original dimensions to be multiples of kernel size
+        padded_h = self.orig_h + pad_h
+        padded_w = self.orig_w + pad_w
+        
         # Verify that kernel grid dimensions match expected values
-        assert h == self.kernel_h and w == self.kernel_w, f"Kernel grid dimensions {h}x{w} don't match expected {self.kernel_h}x{self.kernel_w}"
+        expected_h = padded_h // k
+        expected_w = padded_w // k
+        assert h == expected_h and w == expected_w, \
+            f"Kernel grid dimensions {h}x{w} don't match expected {expected_h}x{expected_w}"
+        
+        # Track actual number of pixels modified
+        n_pixels_modified = torch.zeros(batch_size, dtype=torch.long, device=mask.device)
         
         # Expand each kernel position
         for i in range(h):
@@ -150,10 +164,26 @@ class PGDTrimKernel(PGDTrim):
                     w_start = j * k
                     w_end = min((j + 1) * k, self.orig_w)  # Ensure we don't exceed original dimensions
                     
+                    # Calculate actual kernel size for this position
+                    actual_k_h = h_end - h_start
+                    actual_k_w = w_end - w_start
+                    
                     # Fill the kernel region with the mask value
                     full_mask[:, :, h_start:h_end, w_start:w_end] = mask[:, :, i:i+1, j:j+1]
+                    
+                    # Update pixel count
+                    n_pixels_modified += (actual_k_h * actual_k_w)
+        
+        # Store the actual number of modified pixels
+        self.last_modified_pixels = n_pixels_modified
         
         return full_mask
+
+    def get_actual_modified_pixels(self):
+        """Return the actual number of pixels modified in the last mask expansion"""
+        if hasattr(self, 'last_modified_pixels'):
+            return self.last_modified_pixels
+        return None
 
     def kernel_active_pool_min(self, mask):
         return - self.kernel_active_pool(-mask)
