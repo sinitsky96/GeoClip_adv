@@ -5,12 +5,12 @@ import numpy as np
 import torch.optim as optim
 import os
 import argparse
-from utils import * 
+from FG_UAP.utils import * 
 
 from data.mixed_dataset.download import get_mixed_dataloader, get_transforms as get_mixed_transforms
-from transformers import CLIPProcessor, CLIPModel
+from transformers import CLIPModel
 from torch.utils.data import TensorDataset, DataLoader, random_split
-from sparse_rs.attack_sparse_rs import AttackGeoCLIP, ClipWrap
+from sparse_rs.attack_sparse_rs import ClipWrap
 from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R, CITY_R, REGION_R, COUNTRY_R 
 from geoclip.model.GeoCLIP import GeoCLIP
 
@@ -22,11 +22,12 @@ def get_aug():
     parser.add_argument('--gpu', default='0', type=str)
     parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--max_epoch', default=2, type=int)
+    parser.add_argument('--model', default='clip', type=str)
     parser.add_argument('--model_name', default='CLIP', type=str,
         help='Choose from "alexnet, googlenet, vgg16, vgg19, resnet50, resnet152, deit_tiny, deit_small, deit_base".')
     parser.add_argument('--train_data_dir', default='path_of_train_data', type=str)
     parser.add_argument('--val_data_dir', default='path_of_validation_data', type=str)
-    parser.add_argument('--result_dir', default='path_of_result_dir', type=str)
+    parser.add_argument('--result_dir', default='results', type=str)
     parser.add_argument('--xi', default=0.0392, type=float)
     parser.add_argument('--p', default=np.inf, type=float)
     parser.add_argument('--lr', default=0.02, type=float)
@@ -63,7 +64,7 @@ def main():
     logger, log_dir = create_logger(args)
 
     torch.cuda.set_device(int(args.gpu))
-    device = torch.device( args.device if torch.cuda.is_available() else "cpu" )
+    device = torch.device( "cuda" if torch.cuda.is_available() else "cpu" )
 
     seed = int(args.seed)
     np.random.seed(seed)
@@ -76,7 +77,7 @@ def main():
     dataloader = get_mixed_dataloader(
         args.data_path,
         batch_size=args.batch_size,
-        samples_per_dataset=args.samples_per_dataset,
+        samples_per_dataset=75,
         transform=transform,
         clip_varient=True if args.model.lower() == 'clip' else False,
         shuffle=False,
@@ -190,10 +191,7 @@ def main():
         logger.info(f"Percentage of adv predictions within {labels[T]}: {percent_T_adv:.2f}%")
     
 
-    if args.targeted:
-        improvement = distances_clean - distances_adv
-    else:
-        improvement = distances_adv - distances_clean
+    improvement = distances_adv - distances_clean
 
     pos_mask = improvement > 0
     percent_improved = pos_mask.float().mean().item() * 100.0

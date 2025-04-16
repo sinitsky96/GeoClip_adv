@@ -1,5 +1,5 @@
 import torch
-from rs_attacks import RSAttack
+from sparse_rs.rs_attacks import RSAttack
 from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
 from transformers import CLIPProcessor, CLIPFeatureExtractor, CLIPTokenizer
 import torch.nn.functional as F
@@ -20,7 +20,7 @@ def coords_to_class_indices_nn(gps_gallery, coords):
     return torch.LongTensor(label_indices)
 
 
-class AttackGeoCLIP(RSAttack): # TODO: add an abstract attack class to all the attacks we use later
+class AttackGeoCLIP(RSAttack):
     """
     A Sparse-RS attack class for GeoCLIP that uses a geodesic loss based on the top-k predictions.
     
@@ -97,7 +97,7 @@ class AttackGeoCLIP(RSAttack): # TODO: add an abstract attack class to all the a
     
 
 class ClipWrap():
-    def __init__(self, model, data_path, device):
+    def __init__(self, model, data_path, device, enable_grad=False):
 
         # self.feature_extractor = CLIPFeatureExtractor.from_pretrained(
         #     "openai/clip-vit-large-patch14",
@@ -114,6 +114,7 @@ class ClipWrap():
         self.prompts = load_places365_categories(os.path.join(data_path, 'places365_cat.txt'))
         self.device = device
         self.model = model
+        self.enable_grad = enable_grad
 
     def __call__(self, x):
         return self.get_logits(x)
@@ -125,8 +126,11 @@ class ClipWrap():
                                 return_tensors="pt",
                                 padding=True,
                                 ).to(self.device)
-        with torch.no_grad():
+        if self.enable_grad:
             outputs = self.model(**inputs)
+        else:
+            with torch.no_grad():
+                outputs = self.model(**inputs)
 
         return outputs.logits_per_image
 

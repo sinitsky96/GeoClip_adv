@@ -18,7 +18,7 @@ import torch.nn.functional as F
 import numpy as np
 import copy
 import sys
-from utils import Logger
+from sparse_rs.utils import Logger
 import os
 from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
 
