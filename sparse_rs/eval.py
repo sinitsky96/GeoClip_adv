@@ -249,7 +249,7 @@ if __name__ == '__main__':
                     pred = torch.cat((pred, (output.max(1)[1] != y_curr).float().cpu()), dim=0)
             else:
                 output, _ = model.predict_from_tensor(x_curr)
-                distances = haversine_distance(output, y_curr)
+                distances = haversine_distance(output, y_curr, True)
                 distances_clean.append(distances)
 
                 if not args.targeted: # no need to attack guesses that are already very bad
@@ -351,7 +351,7 @@ if __name__ == '__main__':
                     acc += (output.max(1)[1] != y_curr).float().sum().item()
             else:
                 output, _ = model.predict_from_tensor(x_curr)
-                dists = haversine_distance(output, y_curr)
+                dists = haversine_distance(output, y_curr, True)
                 distances_adv.append(dists)
                 if not args.targeted:
                     acc += (dists <= CONTINENT_R).float().sum().item()
@@ -455,8 +455,8 @@ if __name__ == '__main__':
                 output_clean, _ = model.predict_from_tensor(x_curr_clean)
                 output_adv, _ = model.predict_from_tensor(x_curr_adv)
 
-                clean_dist = haversine_distance(output_clean, y_curr)
-                adv_dist = haversine_distance(output_adv, y_curr)
+                clean_dist = haversine_distance(output_clean, y_curr, True)
+                adv_dist = haversine_distance(output_adv, y_curr, True)
                 
                 all_clean_dist.append(clean_dist.cpu())
                 all_adv_dist.append(adv_dist.cpu())

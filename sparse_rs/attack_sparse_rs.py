@@ -7,7 +7,7 @@ import os
 from data.Im2GPS3k.download import load_places365_categories
 
 def find_nearest_neighbor_index(gps_gallery, coord):
-    distances = haversine_distance(gps_gallery, coord.unsqueeze(0))  # shape: (N,)
+    distances = haversine_distance(gps_gallery, coord.unsqueeze(0), True)  # shape: (N,)
     nn_index = torch.argmin(distances).item()
     return nn_index
 
@@ -69,7 +69,7 @@ class AttackGeoCLIP(RSAttack): # TODO: add an abstract attack class to all the a
         top_pred_gps = gps_gallery[top_pred.indices]
         predicted_gps = top_pred_gps.squeeze(1) # removes the singleton top_k (we use k=1) dimension: [100, 1, 2] -> [100, 2]
 
-        distance = haversine_distance(predicted_gps, y)  # shape: (B,)
+        distance = haversine_distance(predicted_gps, y, True)  # shape: (B,)
         # print(y)
 
         if not self.targeted:
