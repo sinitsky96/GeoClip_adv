@@ -118,6 +118,9 @@ class ClipWrap():
 
     def __call__(self, x):
         return self.get_logits(x)
+    
+    def named_modules(self):
+        return self.model.named_modules()
 
     def get_logits(self, x):
         # print(self.prompts)

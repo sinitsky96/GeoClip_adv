@@ -42,6 +42,9 @@ class Normalize(nn.Module):
             x[:, i] = (x[:, i] - self.mean[i]) / self.std[i]
 
         return x
+    
+from data.Im2GPS3k.download import load_places365_categories
+from transformers import CLIPProcessor
 
 class FG_UAP(object):
 
@@ -53,6 +56,33 @@ class FG_UAP(object):
         self.logger = logger
         self.target = target
         self.target_param = target_param
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14",
+                                                       do_rescale=False,
+                                                       do_resize=False,
+                                                       do_center_crop=False,
+                                                       do_normalize=False
+                                                       )
+        self.prompts = load_places365_categories(os.path.join("data", 'places365_cat.txt'))
+
+    def _get_prompts_for_pass(self, target_override=None):
+        """Determines which prompts to use for a forward pass."""
+        current_target = target_override if target_override is not None else self.target
+        if current_target != -1:
+            # Targeted attack: Use only the target prompt
+            if 0 <= current_target < len(self.prompts):
+                return [self.prompts[current_target]]
+            else:
+                self.logger.warning(f"Invalid target index {current_target}, using first prompt as fallback.")
+                # Fallback to avoid error, though the target loss will be wrong
+                return [self.prompts[0]] 
+        else:
+            # Untargeted attack: Use a minimal dummy prompt to reduce memory.
+            # We only need the forward pass to run for the visual hook.
+            # Using a simple, common prompt is reasonable.
+            return ["a photo"] 
 
     def proj_lp(self):
         # Project on the lp ball centered at 0 and of radius xi
@@ -73,14 +103,30 @@ class FG_UAP(object):
             for img, label in pbar:
                 optimizer.zero_grad()
                 img, label = img.cuda(), label.cuda()
+                prompts_for_clean_pass = self._get_prompts_for_pass(target_override=-1)
                 with torch.enable_grad():
                     # get the logit and feature-layer out of clean image
                     layer_out[0] = None
-                    i_out = self.model(img)
-                    i_layer_out = layer_out[0].clone()
+                    inputs = self.processor(images=img,               
+                                text=prompts_for_clean_pass,       
+                                return_tensors="pt",
+                                padding=True,
+                                ).to(self.device)
+                    i_out = self.model(**inputs).logits_per_image
+                    i_layer_out = layer_out[0].clone().detach() 
+
                     # get the logit and feature-layer out of adversarial image
                     layer_out[0] = None
-                    adv_out = self.model(img + self.v)
+                    self.v.requires_grad_(True)
+                    img_adv = img + self.v
+                    img_adv = torch.clamp(img_adv, 0, 1)
+                    prompts_for_adv_pass = self._get_prompts_for_pass() 
+                    inputs = self.processor(images=img_adv,               
+                                text=prompts_for_adv_pass,       
+                                return_tensors="pt",
+                                padding=True,
+                                ).to(self.device)
+                    adv_out = self.model(**inputs).logits_per_image
                     adv_layer_out = layer_out[0].clone()
                     loss = cal_cossim(adv_layer_out, i_layer_out)
                     if self.target != -1:  # targeted FG-UAP
@@ -112,7 +158,14 @@ class FG_UAP(object):
         diff_all, ori_acc_all, adv_acc_all = 0, 0, 0
         adv_distribution = 0
         layer_out[0] = None
-        v_out = self.model(self.v + mean_tensor)
+        # prompts_for_eval = self.prompts
+        # num_eval_prompts = len(prompts_for_eval)
+        inputs = self.processor(images=self.v + mean_tensor,               
+                                text=self.prompts,       
+                                return_tensors="pt",
+                                padding=True,
+                                ).to(self.device)
+        v_out = self.model(**inputs).logits_per_image
         uap_class = v_out.argmax(-1).squeeze()
         self.logger.info('uap class: {}'.format(uap_class))
         v_layer_out = layer_out[0].clone()
@@ -122,11 +175,21 @@ class FG_UAP(object):
             with torch.no_grad():
                 # get the logit and feature-layer out of clean image
                 layer_out[0] = None
-                i_out = self.model(img)
+                inputs = self.processor(images=img,               
+                                text=self.prompts,       
+                                return_tensors="pt",
+                                padding=True,
+                                ).to(self.device)
+                i_out = self.model(**inputs).logits_per_image
                 i_layer_out = layer_out[0].clone()
                 # get the logit and feature-layer out of adversarial image
                 layer_out[0] = None
-                adv_out = self.model(img + self.v)
+                inputs = self.processor(images=img + self.v,               
+                                text=self.prompts,       
+                                return_tensors="pt",
+                                padding=True,
+                                ).to(self.device)
+                adv_out = self.model(**inputs).logits_per_image
                 adv_layer_out = layer_out[0].clone()
                 loss = cal_cossim(adv_layer_out, i_layer_out)
                 if self.target != -1: # targeted FG-UAP
@@ -178,9 +241,9 @@ def set_hooks(model, logger):
             pass
 
     layers_to_opt = get_layers_to_opt(
-        model[1].__class__.__name__)
+        model.__class__.__name__)
     logger.info('hook layers:')
-    for name, layer in model[1].named_modules():
+    for name, layer in model.named_modules():
         if (name in layers_to_opt):
             logger.info(name)
             layer.register_forward_hook(get_norm_input)
@@ -263,6 +326,8 @@ def get_layers_to_opt(model):
 
     # CLIP
     else:
-        layers_to_opt = ['proj']
+        layers_to_opt = ['visual_projection']
 
     return layers_to_opt
+
+
