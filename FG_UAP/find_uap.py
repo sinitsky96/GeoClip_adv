@@ -10,7 +10,6 @@ from FG_UAP.utils import *
 from data.mixed_dataset.download import get_mixed_dataloader, get_transforms as get_mixed_transforms
 from transformers import CLIPModel
 from torch.utils.data import TensorDataset, DataLoader, random_split
-from sparse_rs.attack_sparse_rs import ClipWrap
 from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R, CITY_R, REGION_R, COUNTRY_R 
 from geoclip.model.GeoCLIP import GeoCLIP
 
@@ -20,7 +19,7 @@ def get_aug():
     parser = argparse.ArgumentParser(description='Feature-Gathering Universal Adversarial Perturbation')
     parser.add_argument('--remark', default='', type=str)
     parser.add_argument('--gpu', default='0', type=str)
-    parser.add_argument('--batch_size', default=32, type=int)
+    parser.add_argument('--batch_size', default=1, type=int)
     parser.add_argument('--max_epoch', default=2, type=int)
     parser.add_argument('--model', default='clip', type=str)
     parser.add_argument('--model_name', default='CLIP', type=str,
@@ -114,7 +113,6 @@ def main():
     net = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
     net.to(device)
     net.eval()
-    net = ClipWrap(net, args.data_path, device=device)
 
     # train_loader, val_loader = get_data(args.train_data_dir, args.val_data_dir, args.batch_size)
     attacker = FG_UAP(args.xi, args.p, net, logger, args.target, args.target_param)
