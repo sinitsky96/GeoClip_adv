@@ -2,19 +2,16 @@ import numpy as np
 import math
 import itertools
 import torch
-from .attack import Attack
-try:
-    from sparse_rs.util import haversine_distance, CONTINENT_R, STREET_R
-except ImportError:
-    # Use the fallback from attack.py
-    from .attack import haversine_distance, CONTINENT_R, STREET_R
+import torch.nn.functional as F
+from attacks.pgd_attacks.attack import Attack
+from sparse_rs.util import haversine_distance
 
 
 class PGDTrim(Attack):
     def __init__(
             self,
             model,
-            criterion,
+            criterion,  # Note: criterion is not used for GeoClip, we use haversine distance
             misc_args=None,
             pgd_args=None,
             dropout_args=None,
@@ -22,9 +19,21 @@ class PGDTrim(Attack):
             mask_args=None,
             kernel_args=None):
 
+        print("\n=== Initializing PGDTrim Attack ===")
         super(PGDTrim, self).__init__(model, criterion, misc_args, pgd_args, dropout_args)
 
         self.name = "PGDTrim"
+        print(f"Initializing with sparsity: {trim_args['sparsity']}")
+        print(f"Trim steps: {trim_args['trim_steps']}")
+        print(f"Max trim steps: {trim_args['max_trim_steps']}")
+        
+        # Define distance thresholds for GeoClip
+        self.continent_threshold = 2500  # km
+        self.country_threshold = 750    # km
+        self.region_threshold = 200     # km
+        self.city_threshold = 25        # km
+        self.street_threshold = 1       # km
+        
         self.sparsity = trim_args['sparsity']
         self.trim_steps = trim_args['trim_steps']
         self.max_trim_steps = trim_args['max_trim_steps']
@@ -32,6 +41,10 @@ class PGDTrim(Attack):
         self.scale_dpo_mean = trim_args['scale_dpo_mean']
         self.enable_post_trim_dpo = trim_args['post_trim_dpo']
         self.dynamic_trim = trim_args['dynamic_trim']
+        
+        print(f"Trim steps reduce policy: {self.trim_steps_reduce_policy}")
+        print(f"Dynamic trim enabled: {self.dynamic_trim}")
+        
         if self.trim_steps_reduce_policy == 'none':
             self.trim_steps_method = self.trim_steps_full
             self.rest_trim_steps_method = self.rest_trim_steps_unchanged
@@ -109,26 +122,11 @@ class PGDTrim(Attack):
                           "over previous restarts")
                     
     def report_schematics(self):
-
-        print("Running novel PGDTrim attack")
-        print("The attack will gradually trim a dense perturbation to the specified sparsity: " + str(self.sparsity))
-        
-        print("Perturbations will be computed for the L0 norms:")
-        print(self.l0_norms)
-        print("The best performing perturbations will be reported for the L0 norms:")
-        print(self.output_l0_norms)
-        print("perturbations L_inf norm limitation:")
-        print(self.eps_ratio)
-        print("Number of iterations for optimizing perturbations in each trim step:")
-        print(self.n_iter)
-        print("perturbations will be optimized with the dropout distribution:")
-        print(self.dropout_str)
-        print("L0 trim steps schedule for the attack:")
-        
-        self.report_trim_schematics()
-        
-        print("L0 pixel trimming will be based on masks sampled from the distribution:")
-        print(self.mask_dist_str)
+        print("Running PGDTrim attack with target sparsity:", self.sparsity)
+        print(f"L_inf norm limitation: {self.eps_ratio}")
+        print(f"Number of iterations: {self.n_iter}")
+        print(f"Dropout distribution: {self.dropout_str}")
+        print(f"Mask distribution: {self.mask_dist_str}")
     
     def parse_mask_args(self):
 
@@ -188,58 +186,16 @@ class PGDTrim(Attack):
         return rest_l0_copy_indices
     
     def compute_l0_norms(self):
-        try:
-            pixels_log_size = int(np.log2(self.n_data_pixels))
-            max_trim_size = 2 ** pixels_log_size
-            
-            if max_trim_size < self.n_data_pixels:
-                n_trim_options = int(np.ceil(np.log2(max_trim_size / self.sparsity)))
-                steps = [max_trim_size >> step for step in range(n_trim_options)]
-                # Ensure steps are decreasing and above sparsity
-                steps = [s for s in steps if s > self.sparsity]
-                all_l0_norms = [self.n_data_pixels] + steps + [self.sparsity]
-            else:
-                n_trim_options = int(np.ceil(np.log2(self.n_data_pixels / self.sparsity))) - 1
-                steps = [self.n_data_pixels >> step for step in range(n_trim_options + 1)]
-                # Ensure steps are decreasing and above sparsity
-                steps = [s for s in steps if s > self.sparsity]
-                all_l0_norms = steps + [self.sparsity]
-                
-            # Remove duplicates while preserving order
-            all_l0_norms = list(dict.fromkeys(all_l0_norms))
-            
-            # Ensure we have at least 2 elements
-            if len(all_l0_norms) < 2:
-                all_l0_norms = [self.n_data_pixels, self.sparsity]
-                
-            n_trim_options = len(all_l0_norms) - 2
-            
-            if self.verbose:
-                print(f"L0 norms: {all_l0_norms}")
-                print(f"Number of trim options: {n_trim_options}")
-                
-            return n_trim_options, all_l0_norms
-        except Exception as e:
-            if self.verbose:
-                print(f"Error in compute_l0_norms: {e}")
-                print("Using fallback L0 norms")
-            
-            # Fallback approach with direct sparsity steps
-            max_trim_steps = min(4, self.max_trim_steps)
-            if max_trim_steps <= 1:
-                all_l0_norms = [self.n_data_pixels, self.sparsity]
-                n_trim_options = 0
-            else:
-                # Create a linear progression from n_data_pixels to sparsity
-                step_size = (self.n_data_pixels - self.sparsity) / max_trim_steps
-                steps = [int(self.n_data_pixels - i * step_size) for i in range(max_trim_steps)]
-                all_l0_norms = steps + [self.sparsity]
-                n_trim_options = len(all_l0_norms) - 2
-            
-            if self.verbose:
-                print(f"Fallback L0 norms: {all_l0_norms}")
-            
-            return n_trim_options, all_l0_norms
+        pixels_log_size = int(np.log2(self.n_data_pixels))
+        max_trim_size = 2 ** pixels_log_size
+        if max_trim_size < self.n_data_pixels:
+            n_trim_options = int(np.ceil(np.log2(max_trim_size / self.sparsity)))
+            all_l0_norms = [self.n_data_pixels] + [max_trim_size >> step for step in range(n_trim_options)] + [
+                self.sparsity]
+        else:
+            n_trim_options = int(np.ceil(np.log2(self.n_data_pixels / self.sparsity))) - 1
+            all_l0_norms = [self.n_data_pixels >> step for step in range(n_trim_options + 1)] + [self.sparsity]
+        return n_trim_options, all_l0_norms
     
     def compute_trim_options(self):
         n_trim_options, all_l0_norms = self.compute_l0_norms()
@@ -470,7 +426,11 @@ class PGDTrim(Attack):
         return self.mask_zeros_flat.scatter(dim=1, index=mask_indices, src=self.mask_ones_flat).view(self.mask_shape)
 
     def apply_mask(self, mask, pert):
-        return mask * pert
+        # Ensure mask is on the correct device and has the right dtype
+        mask = mask.to(device=pert.device, dtype=pert.dtype)
+        # Use in-place multiplication to preserve gradients
+        return pert * mask.detach()  # Detach mask since we don't need its gradients
+
     # mask probabilities computation methods
 
     def mask_prob_uniform(self, pert, mask, n_trim_pixels, trim_ratio):
@@ -549,7 +509,7 @@ class PGDTrim(Attack):
     
     def mask_opt_none(self, x, y, mask, dense_pert):
         sparse_pert = self.apply_mask_method(mask, dense_pert)
-        output, loss = self.eval_pert(x, y, sparse_pert)
+        output, loss = self.test_pert(x, y, sparse_pert)
         return loss
     
     def mask_opt_pgd(self, x, y, mask, dense_pert):
@@ -629,143 +589,149 @@ class PGDTrim(Attack):
                          mask_prep, mask_sample_method, mask_trim,
                          n_trim_pixels, trim_ratio, n_mask_samples):
         with torch.no_grad():
-            n_trim_pixels_tensor = torch.tensor(n_trim_pixels, dtype=torch.int, device=self.device)
-            pixels_prob = self.mask_prob_method(sparse_pert, mask, n_trim_pixels_tensor, trim_ratio)
-            mask_prep_data = mask_prep(pixels_prob, n_trim_pixels_tensor)
-            return mask_trim(x, y, dense_pert,
-                                best_pixels_crit, best_pixels_mask, best_pixels_loss,
-                                mask_sample_method, mask_prep_data, n_trim_pixels_tensor, n_mask_samples)
+            if self.verbose:
+                print(f"\nTrimming pixels to {n_trim_pixels}")
+                if mask is not None:
+                    curr_active = (mask.sum(dim=1) > 0).sum(dim=(1,2))  # Count unique perturbed pixel locations
+                    print(f"Current mask active pixels: {curr_active.tolist()}")
+
+            # Calculate total magnitude for each pixel location (across all channels)
+            pert_magnitude = sparse_pert.abs().view(sparse_pert.size(0), self.data_channels, -1)  # [batch, channels, pixels]
+            pert_magnitude = pert_magnitude.sum(dim=1)  # Sum across channels, shape: [batch, pixels]
+            
+            height = sparse_pert.size(2)
+            width = sparse_pert.size(3)
+            
+            # Create spatial mask (1 for selected pixels, 0 for others)
+            spatial_mask = torch.zeros((sparse_pert.size(0), height * width), 
+                                    device=sparse_pert.device)  # Shape: [batch_size, pixels]
+            
+            for i in range(mask.size(0)):  # For each sample in batch
+                # Get top n_trim_pixels indices based on total magnitude
+                _, indices = pert_magnitude[i].topk(min(n_trim_pixels, pert_magnitude[i].numel()))
+                spatial_mask[i, indices] = 1.0
+            
+            # Reshape spatial mask to [batch, height, width]
+            spatial_mask = spatial_mask.view(sparse_pert.size(0), height, width)
+            
+            # Expand mask to all channels - if a pixel is selected, allow all its channels to be modified
+            new_mask = spatial_mask.unsqueeze(1).expand(-1, self.data_channels, -1, -1)
+            
+            if self.verbose:
+                actual_pixels = (new_mask.sum(dim=1) > 0).sum(dim=(1,2))  # Count unique perturbed pixel locations
+                print(f"New mask active pixels: {actual_pixels.tolist()}")
+                print(f"Expected active pixels: {n_trim_pixels}")
+                if not torch.all(actual_pixels == n_trim_pixels):
+                    print("Warning: Mask does not have exactly n_trim_pixels active pixels")
+                    print(f"Actual pixels per sample: {actual_pixels.tolist()}")
+            
+            return new_mask
 
     def pgd(self, x, y, mask, dense_pert, best_sparse_pert, best_loss, best_succ, dpo_mean, dpo_std, n_iter=None):
-        with torch.no_grad():
-            report_info = self.report_info
-            if n_iter is None:
-                n_iter = self.n_iter
-            else:
-                report_info = False
-            sparse_pert = self.apply_mask_method(mask, dense_pert)
-            loss, succ = self.eval_pert(x, y, sparse_pert)
-            self.update_best(best_loss, loss,
-                             [best_sparse_pert, best_succ],
-                             [sparse_pert, succ])
-            
-            if report_info:
-                all_best_succ = torch.zeros(n_iter + 1, self.batch_size, dtype=torch.bool, device=self.device)
-                all_best_loss = torch.zeros(n_iter + 1, self.batch_size, dtype=self.dtype, device=self.device)
-                all_best_succ[0] = best_succ
-                all_best_loss[0] = best_loss
+        """
+        Performs PGD attack with trimming
+        """
+        batch_size = x.shape[0]
+        device = x.device
+        n_iter = n_iter if n_iter is not None else self.n_iter
 
-        self.set_dpo(dpo_mean, dpo_std)
-        self.model.eval()
-        with torch.enable_grad():
-            pert = dense_pert.clone().detach()
-            for k in range(1, n_iter + 1):
-                pert.requires_grad_()
-                mask.requires_grad_(False)
-                sparse_pert = self.apply_mask_method(mask, pert)
-                train_loss = self.criterion(self.model.forward(x + self.dpo(sparse_pert)), y)
-                grad = torch.autograd.grad(train_loss.mean(), [pert])[0].detach()
-    
-                with torch.no_grad():
-                    pert = self.step(pert, grad)
-                    sparse_pert = self.apply_mask_method(mask, pert)
-                    eval_loss, succ = self.eval_pert(x, y, sparse_pert)
-                    self.update_best(best_loss, eval_loss,
-                                     [dense_pert, best_sparse_pert, best_succ],
-                                     [pert, sparse_pert, succ])
-                    
-                    if report_info:
-                        all_best_succ[k] = best_succ | all_best_succ[k - 1]
-                        all_best_loss[k] = best_loss
-
-        if report_info:
-            return all_best_succ, all_best_loss
-        return None, None
-
-    def eval_pert(self, x, y, pert):
-        """Evaluate perturbation and return loss and success indicator"""
-        try:
-            output = self.model.forward(x + pert)
-            loss = self.criterion(output, y)
-            
-            # Initialize success tensor with correct size
-            succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-            
-            # For GeoCLIP models, determine success based on haversine distance
-            if output.dim() == 2 and output.shape[1] == 2 and y.dim() == 2 and y.shape[1] == 2:
-                # This is likely GPS coordinate output - determine success based on distance
-                distance = haversine_distance(output, y)
-                
-                if hasattr(self, 'targeted_mul') and self.targeted_mul < 0:  # Targeted attack
-                    succ = distance <= STREET_R  # Success if distance is small
-                else:  # Untargeted attack
-                    succ = distance > CONTINENT_R  # Success if distance is large
-            
-            # Get success indicator if available from criterion
-            elif hasattr(self.criterion, 'get_success'):
-                try:
-                    criterion_succ = self.criterion.get_success()
-                    
-                    # Special handling for image-shaped success tensors
-                    if len(criterion_succ.shape) > 1:  # Has at least 2 dimensions
-                        print(f"Warning: Success tensor has image shape {criterion_succ.shape}, expected batch size {self.batch_size}")
-                        # Just create a new success tensor with correct shape
-                        succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-                    elif criterion_succ.numel() == 0:
-                        # Empty tensor case
-                        succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-                    else:
-                        # Normal case: tensor has correct number of elements
-                        succ = criterion_succ.reshape(self.batch_size)
-                except Exception as e:
-                    print(f"Error getting success indicator: {e}")
-            
-            # Ensure loss has correct shape
-            if loss.numel() == 1:
-                loss = loss.expand(self.batch_size)
-            else:
-                loss = loss.reshape(self.batch_size)
-                
-        except Exception as e:
-            print(f"Error in eval_pert: {e}")
-            # Create fallback tensors in case of error
-            loss = torch.ones(self.batch_size, device=self.device)
-            succ = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+        # Initialize perturbation
+        delta = torch.zeros_like(x, requires_grad=True)
+        if self.rand_init:
+            delta.data = torch.rand_like(delta.data) * 2 * self.eps_ratio - self.eps_ratio
+            if mask is not None:
+                delta.data = delta.data * mask
         
-        return loss, succ
+        # Initialize best results
+        best_sparse_pert = best_sparse_pert.clone()
+        best_loss = best_loss.clone()
+        success = best_succ.clone().to(dtype=torch.bool)
+
+        # Print initial attack info
+        if self.verbose:
+            print(f"\nStarting PGD attack with {n_iter} iterations")
+            print(f"Initial perturbation shape: {delta.shape}")
+            if mask is not None:
+                active_pixels = mask.sum(dim=(1,2,3)) / self.data_channels
+                print(f"Number of active pixels in mask: {active_pixels.tolist()}")
+
+        for i in range(n_iter):
+            if self.verbose:
+                print(f"\nIteration {i+1}/{n_iter}")
+            
+            # Forward pass
+            with torch.enable_grad():
+                x_adv = x + delta
+                pred_coords, _ = self.model.predict_from_tensor(x_adv)
+                
+                # Calculate loss (negative distance for maximization)
+                distances = haversine_distance(pred_coords, y)
+                loss = -distances.mean()
+                
+                # Backward pass
+                loss.backward()
+            
+            with torch.no_grad():
+                grad = delta.grad.detach()
+                
+                # Update perturbation
+                delta.data = delta.data - self.alpha * grad.sign()
+                if mask is not None:
+                    delta.data = delta.data * mask
+                delta.data = torch.clamp(delta.data, -self.eps_ratio, self.eps_ratio)
+                
+                # Calculate current metrics
+                curr_success = (distances > self.continent_threshold).bool()
+                
+                # Update best results if current is better
+                better_loss = distances > best_loss
+                best_loss[better_loss] = distances[better_loss]
+                success[better_loss] = curr_success[better_loss]
+                if better_loss.any():
+                    best_sparse_pert[better_loss] = delta.detach()[better_loss]
+                
+                if self.verbose:
+                    # Calculate L0 norm (count of non-zero elements across channels)
+                    pert_l0 = (delta.abs() > 0).sum(dim=1).sum(dim=(1,2)) # Sum across H,W, then channels
+                    print(f"Current loss: {-loss.item():.4f}")
+                    print(f"Best loss so far: {best_loss.mean().item():.4f}")
+                    print(f"Success rate: {curr_success.float().mean().item()*100:.2f}%")
+                    print(f"Mean distance: {distances.mean().item():.4f} km")
+                    print(f"L0 norms: {pert_l0.tolist()}")
+                    print(f"Gradient stats - Mean: {grad.abs().mean().item():.4f}, Max: {grad.abs().max().item():.4f}")
+                
+                # Clear gradients
+                delta.grad.zero_()
+                del grad, pred_coords
+
+        return best_sparse_pert, best_loss, success
 
     def perturb(self, x, y, targeted=False):
-        with (torch.no_grad()):
+        # Ensure x requires gradients and is on the correct device
+        x = x.detach().clone()
+        x = x.to(self.device)
+        x.requires_grad_(True)
+        
+        with torch.no_grad():
             self.set_params(x, targeted)
-            
-            # Get clean loss and success
             self.clean_loss, self.clean_succ = self.eval_pert(x, y, pert=torch.zeros_like(x))
-            
-            # Ensure tensors have correct dimensions (with additional error handling)
-            try:
-                clean_loss = self.clean_loss.reshape(self.batch_size)
-                clean_succ = self.clean_succ.reshape(self.batch_size)
-            except RuntimeError as e:
-                print(f"Error reshaping tensors: {e}")
-                print(f"clean_loss shape: {self.clean_loss.shape}, clean_succ shape: {self.clean_succ.shape}")
-                # Create tensors with correct shape as fallback
-                clean_loss = torch.zeros(self.batch_size, device=self.device)
-                clean_succ = torch.zeros(self.batch_size, device=self.device)
-            
             best_l0_perts = torch.zeros_like(x).unsqueeze(0).repeat(self.n_l0_norms, 1, 1, 1, 1)
-            best_l0_loss = clean_loss.clone().detach().unsqueeze(0).repeat(self.n_l0_norms, 1)
-            best_l0_succ = clean_succ.clone().detach().unsqueeze(0).repeat(self.n_l0_norms, 1)
+            best_l0_loss = self.clean_loss.clone().detach().unsqueeze(0).repeat(self.n_l0_norms, 1)
+            best_l0_succ = self.clean_succ.clone().detach().unsqueeze(0).repeat(self.n_l0_norms, 1)
             best_l0_pixels_crit = torch.zeros(self.mask_shape, dtype=self.dtype, device=self.device
                                               ).unsqueeze(0).repeat(self.n_l0_norms, 1, 1, 1, 1)
             best_l0_pixels_mask = self.mask_zeros_flat.clone().detach(
             ).view(self.mask_shape).unsqueeze(0).repeat(self.n_l0_norms, 1, 1, 1, 1)
             best_l0_pixels_loss = torch.zeros_like(best_l0_loss)
 
-            if self.report_info:
-                all_best_succ = torch.zeros(self.n_l0_norms, self.n_restarts, self.n_iter + 1, self.batch_size, dtype=torch.bool, device=self.device)
-                all_best_loss = torch.zeros(self.n_l0_norms, self.n_restarts, self.n_iter + 1, self.batch_size, dtype=self.dtype, device=self.device)
+            # Initialize tracking tensors for L0 norms with Long dtype
+            l0_norms_tracking = torch.zeros(self.n_l0_norms, self.batch_size, dtype=torch.long, device=self.device)
+            l_inf_norms_tracking = torch.zeros(self.n_l0_norms, self.batch_size, dtype=self.dtype, device=self.device)
 
         for rest in range(self.n_restarts):
+            if self.verbose:
+                print(f"\nStarting restart {rest + 1}/{self.n_restarts}")
+            
             with torch.no_grad():
                 mask = self.mask_ones_flat.clone().detach().view(self.mask_shape)
                 (trim_steps, l0_indices, l0_copy_indices,
@@ -779,6 +745,10 @@ class PGDTrim(Attack):
                     dense_pert = torch.zeros_like(x)
 
             for trim_idx, n_trim_pixels in enumerate(trim_steps):
+                if self.verbose:
+                    print(f"\nProcessing trim step {trim_idx + 1}/{len(trim_steps)}")
+                    print(f"Target L0 norm: {n_trim_pixels}")
+                
                 with torch.no_grad():
                     l0_idx = l0_indices[trim_idx]
                     trim_l0_idx = l0_indices[trim_idx + 1]
@@ -796,22 +766,33 @@ class PGDTrim(Attack):
                     n_mask_samples = steps_n_mask_samples[trim_idx]
                     mask_trim = steps_mask_trim[trim_idx]
                     
-                no_trim_all_best_succ, no_trim_all_best_loss\
-                    = self.pgd(x, y, mask, dense_pert, best_sparse_pert, best_loss, best_succ, dpo_mean, dpo_std)
+                sparse_pert, final_loss, success = self.pgd(x, y, mask, dense_pert, best_sparse_pert, best_loss, best_succ, dpo_mean, dpo_std)
                     
                 with torch.no_grad():
-                    if self.report_info:
-                        all_best_succ[l0_idx, rest] = no_trim_all_best_succ
-                        all_best_loss[l0_idx, rest] = no_trim_all_best_loss
-                    if self.verbose:
-                        pert_l0 = best_sparse_pert.abs().view(self.batch_size, self.data_channels, -1).sum(dim=1).count_nonzero(1)
-                        print("Finished optimizing sparse perturbation on predetermined pixels")
-                        print('max L0 in perturbation: ' + str(pert_l0.max().item()))
-                        pert_l_inf = (best_sparse_pert.abs() / self.data_RGB_size).view(self.batch_size, -1).max(1)[0]
-                        print('max L_inf in perturbation: {:.5f}, nan in tensor: {}, max: {:.5f}, min: {:.5f}'.format(
-                            pert_l_inf.max(), (best_sparse_pert != best_sparse_pert).sum(), best_sparse_pert.max(), best_sparse_pert.min()))
+                    # Update best perturbations and track L0/L_inf norms
+                    better_loss = final_loss > best_l0_loss[l0_idx]
+                    if better_loss.any():
+                        best_l0_perts[l0_idx][better_loss] = sparse_pert[better_loss]
+                        best_l0_loss[l0_idx][better_loss] = final_loss[better_loss]
+                        best_l0_succ[l0_idx][better_loss] = success[better_loss]
+                        
+                        # Update L0 and L_inf norm tracking with correct dtypes
+                        curr_l0 = sparse_pert[better_loss].abs().view(better_loss.sum(), self.data_channels, -1).sum(dim=1).count_nonzero(1).to(dtype=torch.long)
+                        curr_l_inf = (sparse_pert[better_loss].abs() / self.data_RGB_size).view(better_loss.sum(), -1).max(1)[0]
+                        l0_norms_tracking[l0_idx][better_loss] = curr_l0
+                        l_inf_norms_tracking[l0_idx][better_loss] = curr_l_inf
                     
-                    mask = self.trim_pert_pixels(x, y, mask, dense_pert, best_sparse_pert,
+                    if self.verbose:
+                        pert_l0 = sparse_pert.abs().view(self.batch_size, self.data_channels, -1).sum(dim=1).count_nonzero(1)
+                        print("\nCurrent perturbation stats:")
+                        print(f"L0 norm: {pert_l0.tolist()}")
+                        print(f"Mean L0: {pert_l0.float().mean().item():.2f}")
+                        pert_l_inf = (sparse_pert.abs() / self.data_RGB_size).view(self.batch_size, -1).max(1)[0]
+                        print(f"L_inf norm: {pert_l_inf.max().item():.4f}")
+                        print(f"Success rate: {success.float().mean().item()*100:.2f}%")
+                        print(f"Loss: {final_loss.mean().item():.4f}")
+                    
+                    mask = self.trim_pert_pixels(x, y, mask, dense_pert, sparse_pert,
                                                  best_pixels_crit, best_pixels_mask, best_pixels_loss,
                                                  mask_prep, mask_sample, mask_trim,
                                                  n_trim_pixels, trim_ratio, n_mask_samples)
@@ -821,29 +802,33 @@ class PGDTrim(Attack):
                 best_sparse_pert = best_l0_perts[l0_idx]
                 best_loss = best_l0_loss[l0_idx]
                 best_succ = best_l0_succ[l0_idx]
-            no_trim_all_best_succ, no_trim_all_best_loss \
-                = self.pgd(x, y, mask, dense_pert, best_sparse_pert, best_loss, best_succ,
+            
+            sparse_pert, final_loss, success = self.pgd(x, y, mask, dense_pert, best_sparse_pert, best_loss, best_succ,
                            self.post_trim_dpo_mean, self.post_trim_dpo_std)
+            
             with torch.no_grad():
-                if self.report_info:
-                    all_best_succ[l0_idx, rest] = no_trim_all_best_succ
-                    all_best_loss[l0_idx, rest] = no_trim_all_best_loss
-                    if len(l0_copy_indices):
-                        all_best_succ[l0_copy_indices, rest] = all_best_succ[l0_copy_indices, rest - 1, -1].unsqueeze(1)
-                        all_best_loss[l0_copy_indices, rest] = all_best_loss[l0_copy_indices, rest - 1, -1].unsqueeze(1)
+                # Update final L0 norm results
+                better_loss = final_loss > best_l0_loss[l0_idx]
+                if better_loss.any():
+                    best_l0_perts[l0_idx][better_loss] = sparse_pert[better_loss]
+                    best_l0_loss[l0_idx][better_loss] = final_loss[better_loss]
+                    best_l0_succ[l0_idx][better_loss] = success[better_loss]
+                    
+                    # Update L0 and L_inf norm tracking for final step with correct dtypes
+                    curr_l0 = sparse_pert[better_loss].abs().view(better_loss.sum(), self.data_channels, -1).sum(dim=1).count_nonzero(1).to(dtype=torch.long)
+                    curr_l_inf = (sparse_pert[better_loss].abs() / self.data_RGB_size).view(better_loss.sum(), -1).max(1)[0]
+                    l0_norms_tracking[l0_idx][better_loss] = curr_l0
+                    l_inf_norms_tracking[l0_idx][better_loss] = curr_l_inf
 
                 if self.verbose:
-                    pert_l0 = best_sparse_pert.abs().view(self.batch_size, self.data_channels, -1).sum(dim=1).count_nonzero(1)
-                    print("Finished optimizing perturbation without pixel trimming")
-                    print('max L0 in perturbation: ' + str(pert_l0.max().item()))
-                    pert_l_inf = (best_sparse_pert.abs() / self.data_RGB_size).view(self.batch_size, -1).max(1)[0]
-                    print('max L_inf in perturbation: {:.5f}, nan in tensor: {}, max: {:.5f}, min: {:.5f}'.format(
-                        pert_l_inf.max(), (best_sparse_pert != best_sparse_pert).sum(), best_sparse_pert.max(),
-                        best_sparse_pert.min()))
+                    pert_l0 = sparse_pert.abs().view(self.batch_size, self.data_channels, -1).sum(dim=1).count_nonzero(1)
+                    print(f"\nFinal perturbation stats (L0={self.sparsity}):")
+                    print(f"L0 norm: {pert_l0.tolist()}")
+                    print(f"Mean L0: {pert_l0.float().mean().item():.2f}")
+                    pert_l_inf = (sparse_pert.abs() / self.data_RGB_size).view(self.batch_size, -1).max(1)[0]
+                    print(f"L_inf norm: {pert_l_inf.max().item():.4f}")
+                    print(f"Success rate: {success.float().mean().item()*100:.2f}%")
+                    print(f"Loss: {final_loss.mean().item():.4f}")
 
-        if self.report_info:
-            return best_l0_perts, all_best_succ, all_best_loss
-
-        return best_l0_perts, None, None
-
-
+        # Return L0 norms tracking along with perturbations
+        return best_l0_perts, l0_norms_tracking, l_inf_norms_tracking

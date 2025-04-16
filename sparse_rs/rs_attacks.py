@@ -995,9 +995,9 @@ class RSAttack():
                 if x.dim() == 5 and x.size(1) == 1:
                     x = x.squeeze(1)
                 if not self.targeted:
-                    acc = haversine_distance(self.predict(x), y) <= CONTINENT_R
+                    acc = haversine_distance(self.predict(x), y, True) <= CONTINENT_R
                 else:
-                    acc = haversine_distance(self.predict(x), y) > STREET_R
+                    acc = haversine_distance(self.predict(x), y, True) > STREET_R
             else: # classes
                 if not self.targeted:
                     acc = self.predict(x).max(1)[1] == y
@@ -1033,9 +1033,9 @@ class RSAttack():
                     output_curr = self.predict(adv_curr)
                     if self.geoclip_attack: # distance
                         if not self.targeted:
-                            acc_curr = haversine_distance(output_curr, y_to_fool) <= CONTINENT_R
+                            acc_curr = haversine_distance(output_curr, y_to_fool, True) <= CONTINENT_R
                         else:
-                            acc_curr = haversine_distance(output_curr, y_to_fool) > STREET_R
+                            acc_curr = haversine_distance(output_curr, y_to_fool, True) > STREET_R
                     else: # classes
                         if not self.targeted:
                             acc_curr = output_curr.max(1)[1] == y_to_fool
